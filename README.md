@@ -39,6 +39,7 @@ open master/html/index.html
 | `categorize` | AI-powered categorization (requires API key) |
 | `generate` | Generate HTML pages → `master/html/` |
 | `export` | Export for NotebookLM → `master/exports/` |
+| `update` | **Incremental**: merge new, categorize new only, regenerate |
 | `all` | Run merge, consolidate, generate, export |
 | `clean` | Delete generated files to re-run processing |
 | `cleanup-raw` | Delete raw exports (DESTRUCTIVE - requires confirmation) |
@@ -52,17 +53,18 @@ open master/html/index.html
 3. Place media export folders in `raw/media/`
 4. Run `python3 tools/bookmark_merger.py all`
 
-### Adding new exports
+### Adding new exports (recommended)
 
 1. Add new JSON files to `raw/json/`
 2. Add new media folders to `raw/media/`
-3. Clean and re-run:
+3. Run incremental update:
    ```bash
-   python3 tools/bookmark_merger.py clean
-   python3 tools/bookmark_merger.py all
+   python3 tools/bookmark_merger.py update
    ```
 
-### With AI categorization
+This only categorizes NEW bookmarks, preserving existing categorizations. Saves API calls and time.
+
+### Full rebuild (if needed)
 
 ```bash
 python3 tools/bookmark_merger.py clean

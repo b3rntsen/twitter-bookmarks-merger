@@ -20,6 +20,9 @@ python3 tools/bookmark_merger.py generate     # Generate HTML → master/html/
 python3 tools/bookmark_merger.py export       # Export for NotebookLM → master/exports/
 python3 tools/bookmark_merger.py all          # Run merge, consolidate, generate, export
 
+# Incremental update (preferred for adding new exports)
+python3 tools/bookmark_merger.py update       # Merge new, categorize NEW only, regenerate
+
 # Cleanup commands
 python3 tools/bookmark_merger.py clean        # Delete master/ to re-run (safe)
 python3 tools/bookmark_merger.py cleanup-raw  # Delete raw/ (DESTRUCTIVE, separate step)
@@ -44,6 +47,7 @@ python3 tools/bookmark_merger.py cleanup-raw  # Delete raw/ (DESTRUCTIVE, separa
 
 ## Important Rules
 
+- **Adding new exports**: Use `update` command - it only categorizes NEW bookmarks, preserving existing categorizations and saving API calls.
 - **`clean` vs `cleanup-raw`**: These are intentionally separate commands. `clean` removes generated files and is safe to run anytime. `cleanup-raw` deletes original export data and should only be run after QA.
 - **Re-running**: To regenerate all output, run `clean` then `all`. Never need to delete raw data to re-process.
 - **Dependencies**: When adding new Python dependencies, add them to `requirements.txt`.

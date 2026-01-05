@@ -8,9 +8,10 @@ categorize with AI, and export for NotebookLM.
 Usage:
     python bookmark_merger.py merge       # Deduplicate JSON files
     python bookmark_merger.py consolidate # Consolidate media files
-    python bookmark_merger.py categorize  # AI categorization
+    python bookmark_merger.py categorize  # AI categorization (all bookmarks)
     python bookmark_merger.py generate    # Generate HTML pages
     python bookmark_merger.py export      # Export for NotebookLM
+    python bookmark_merger.py update      # Incremental: merge new, categorize new only
     python bookmark_merger.py all         # Run merge, consolidate, generate, export
     python bookmark_merger.py clean       # Delete generated files to re-run
     python bookmark_merger.py cleanup-raw # Delete raw exports (DESTRUCTIVE)
@@ -103,8 +104,9 @@ def cmd_merge(args: argparse.Namespace) -> None:
     print(f"After deduplication: {len(deduped)}")
     print(f"Duplicates removed: {len(all_bookmarks) - len(deduped)}")
 
-    # Sort by created date (newest first)
-    deduped.sort(key=lambda x: x.get("Created At", ""), reverse=True)
+    # Sort by created date (newest first) - parse actual date, not string sort
+    from datetime import timezone
+    deduped.sort(key=lambda x: parse_tweet_date(x.get("Created At", "")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
     # Ensure master directory exists
     MASTER_DIR.mkdir(parents=True, exist_ok=True)
@@ -309,32 +311,33 @@ Tweets:
     # Group tweets by category and time period
     category_summaries: dict[str, dict[str, str]] = defaultdict(dict)
 
+    # Pre-calculate total summaries to generate for progress
+    summary_tasks = []
     for cat_id, tweet_ids in category_tweets.items():
         if not tweet_ids:
             continue
-
-        # Get tweets for this category
         cat_tweets = [tweet_lookup.get(tid) for tid in tweet_ids if tid in tweet_lookup]
         cat_tweets = [t for t in cat_tweets if t]
-
         if not cat_tweets:
             continue
-
-        # Group by time periods
-        by_period: dict[str, list[dict]] = defaultdict(list)
+        by_period_temp: dict[str, list[dict]] = defaultdict(list)
         for tweet in cat_tweets:
             dt = parse_tweet_date(tweet.get("Created At", ""))
             if dt:
                 periods = get_time_periods(dt)
-                by_period[periods["year"]].append(tweet)
-                by_period[periods["month"]].append(tweet)
+                by_period_temp[periods["year"]].append(tweet)
+                by_period_temp[periods["month"]].append(tweet)
+        for period, period_tweets in by_period_temp.items():
+            if len(period_tweets) >= 3:
+                summary_tasks.append((cat_id, period, period_tweets))
 
-        # Generate summary for each period with enough tweets
-        for period, period_tweets in by_period.items():
-            if len(period_tweets) < 3:
-                continue
+    total_summaries = len(summary_tasks)
+    print(f"Generating {total_summaries} summaries...")
 
-            summary_prompt = f"""Summarize these {len(period_tweets)} bookmarked tweets in the "{categories[cat_id].get('name', cat_id)}" category from {period}.
+    for idx, (cat_id, period, period_tweets) in enumerate(summary_tasks, 1):
+        print(f"  Summary {idx}/{total_summaries}: {categories[cat_id].get('name', cat_id)} - {period}")
+
+        summary_prompt = f"""Summarize these {len(period_tweets)} bookmarked tweets in the "{categories[cat_id].get('name', cat_id)}" category from {period}.
 
 Keep it to 2-3 sentences highlighting key themes and notable content.
 
@@ -342,13 +345,13 @@ Tweets:
 {chr(10).join(t.get('Full Text', '')[:200] for t in period_tweets[:15])}
 """
 
-            response = client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=300,
-                messages=[{"role": "user", "content": summary_prompt}]
-            )
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=300,
+            messages=[{"role": "user", "content": summary_prompt}]
+        )
 
-            category_summaries[cat_id][period] = response.content[0].text.strip()
+        category_summaries[cat_id][period] = response.content[0].text.strip()
 
     # Build final categories structure
     final_categories = {
@@ -410,7 +413,15 @@ HTML_BASE = """<!DOCTYPE html>
         }}
         a {{ color: var(--link); text-decoration: none; }}
         a:hover {{ text-decoration: underline; }}
-        nav {{ margin-bottom: 20px; padding-bottom: 10px; border-bottom: 1px solid var(--border); }}
+        nav {{
+            position: sticky;
+            top: 0;
+            background: var(--bg);
+            z-index: 100;
+            margin-bottom: 20px;
+            padding: 15px 0 10px;
+            border-bottom: 1px solid var(--border);
+        }}
         nav a {{ margin-right: 15px; }}
         h1 {{ margin-bottom: 10px; }}
         h2 {{ margin: 20px 0 10px; font-size: 1.3em; }}
@@ -490,6 +501,89 @@ HTML_BASE = """<!DOCTYPE html>
             background: var(--card-bg);
             color: var(--text);
             font-size: 1em;
+        }}
+        .search-container {{
+            position: relative;
+        }}
+        .search-suggestions {{
+            position: absolute;
+            top: 100%;
+            left: 0;
+            right: 0;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 0 0 8px 8px;
+            max-height: 200px;
+            overflow-y: auto;
+            z-index: 50;
+        }}
+        .search-suggestions div {{
+            padding: 8px 10px;
+            cursor: pointer;
+        }}
+        .search-suggestions div:hover,
+        .search-suggestions div.selected {{
+            background: var(--link);
+            color: white;
+        }}
+        .search-suggestions .match-count {{
+            color: var(--secondary);
+            font-size: 0.8em;
+            float: right;
+        }}
+        .timeline-nav {{
+            margin-top: 10px;
+            padding-top: 10px;
+            border-top: 1px solid var(--border);
+        }}
+        .year-row, .month-row {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }}
+        .year-link, .month-link {{
+            cursor: pointer;
+            color: var(--link);
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.85em;
+        }}
+        .year-link:hover, .month-link:hover {{
+            background: var(--link);
+            color: white;
+        }}
+        .year-link.active {{
+            background: var(--link);
+            color: white;
+        }}
+        .month-row {{
+            margin-top: 8px;
+            padding: 8px;
+            background: var(--bg);
+            border-radius: 4px;
+        }}
+        .filter-bar, .month-filter {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 15px;
+        }}
+        .filter-btn {{
+            padding: 6px 12px;
+            border: 1px solid var(--border);
+            border-radius: 20px;
+            background: var(--card-bg);
+            color: var(--text);
+            cursor: pointer;
+            font-size: 0.85em;
+        }}
+        .filter-btn:hover {{
+            border-color: var(--link);
+        }}
+        .filter-btn.active {{
+            background: var(--link);
+            color: white;
+            border-color: var(--link);
         }}
         .hidden {{ display: none; }}
     </style>
@@ -598,6 +692,137 @@ def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
     )
 
 
+def build_category_timeline(bookmarks: list[dict], categories_data: dict) -> dict:
+    """Build timeline data for each category: {cat_id: {year: {month: count}}}"""
+    timeline = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
+
+    if not categories_data:
+        return {}
+
+    tweet_categories = categories_data.get("tweet_categories", {})
+    tweet_lookup = {b["Tweet Id"]: b for b in bookmarks}
+
+    for tweet_id, cats in tweet_categories.items():
+        bookmark = tweet_lookup.get(tweet_id)
+        if not bookmark:
+            continue
+
+        dt = parse_tweet_date(bookmark.get("Created At", ""))
+        if not dt:
+            continue
+
+        year = str(dt.year)
+        month = f"{dt.month:02d}"
+
+        for cat in cats:
+            timeline[cat][year][month] += 1
+
+    # Convert to regular dict for JSON serialization
+    return {
+        cat: {year: dict(months) for year, months in years.items()}
+        for cat, years in timeline.items()
+    }
+
+
+def build_search_index(bookmarks: list[dict], show_progress: bool = True) -> dict:
+    """Build search index for client-side search with autocomplete"""
+    import re
+
+    # Stopwords to exclude from word index
+    stopwords = {
+        'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
+        'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been',
+        'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
+        'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'need',
+        'dare', 'ought', 'used', 'it', 'its', 'this', 'that', 'these', 'those',
+        'i', 'you', 'he', 'she', 'we', 'they', 'what', 'which', 'who', 'whom',
+        'whose', 'where', 'when', 'why', 'how', 'all', 'each', 'every', 'both',
+        'few', 'more', 'most', 'other', 'some', 'such', 'no', 'nor', 'not',
+        'only', 'own', 'same', 'so', 'than', 'too', 'very', 'just', 'also',
+        'now', 'here', 'there', 'then', 'once', 'if', 'unless', 'until',
+        'while', 'about', 'after', 'before', 'between', 'into', 'through',
+        'during', 'above', 'below', 'up', 'down', 'out', 'off', 'over', 'under',
+        'again', 'further', 'https', 'http', 'com', 'www', 't', 'co', 's', 're'
+    }
+
+    words_index: dict[str, list[str]] = defaultdict(list)
+    profiles_index: dict[str, list[str]] = defaultdict(list)
+    word_counts: dict[str, int] = defaultdict(int)
+    profile_counts: dict[str, int] = defaultdict(int)
+    tweets_meta: dict[str, dict] = {}
+
+    total = len(bookmarks)
+    if show_progress:
+        print(f"Building search index for {total} bookmarks...")
+
+    for idx, bookmark in enumerate(bookmarks, 1):
+        if show_progress and idx % 500 == 0:
+            print(f"  Indexed {idx}/{total} bookmarks ({idx * 100 // total}%)")
+        tweet_id = bookmark.get("Tweet Id", "")
+        if not tweet_id:
+            continue
+
+        text = bookmark.get("Full Text", "")
+        author = bookmark.get("User Screen Name", "")
+        name = bookmark.get("User Name", "")
+        date = bookmark.get("Created At", "")
+
+        # Parse date for display
+        dt = parse_tweet_date(date)
+        date_str = dt.strftime("%Y-%m-%d") if dt else ""
+
+        # Store tweet metadata (truncated for size)
+        tweets_meta[tweet_id] = {
+            "t": text[:100] + "..." if len(text) > 100 else text,
+            "a": f"@{author}",
+            "d": date_str
+        }
+
+        # Index author
+        if author:
+            author_lower = author.lower()
+            if tweet_id not in profiles_index[author_lower]:
+                profiles_index[author_lower].append(tweet_id)
+                profile_counts[author_lower] += 1
+
+        # Extract and index words
+        words = re.findall(r'[a-zA-Z]{3,}', text.lower())
+        seen_words = set()
+        for word in words:
+            if word not in stopwords and word not in seen_words:
+                seen_words.add(word)
+                words_index[word].append(tweet_id)
+                word_counts[word] += 1
+
+        # Extract mentioned @handles
+        mentions = re.findall(r'@([a-zA-Z0-9_]+)', text)
+        for mention in mentions:
+            mention_lower = mention.lower()
+            if tweet_id not in profiles_index[mention_lower]:
+                profiles_index[mention_lower].append(tweet_id)
+                profile_counts[mention_lower] += 1
+
+    # Get top words and profiles for suggestions (sorted by frequency)
+    top_words = sorted(word_counts.keys(), key=lambda w: word_counts[w], reverse=True)[:500]
+    top_profiles = sorted(profile_counts.keys(), key=lambda p: profile_counts[p], reverse=True)[:200]
+
+    # Only keep words that appear in multiple tweets for the index
+    filtered_words = {w: ids for w, ids in words_index.items() if len(ids) >= 2}
+
+    if show_progress:
+        print(f"  Done: {len(filtered_words)} words, {len(profiles_index)} profiles indexed")
+
+    return {
+        "words": {w: filtered_words[w] for w in top_words if w in filtered_words},
+        "profiles": dict(profiles_index),
+        "tweets": tweets_meta,
+        "suggestions": {
+            "words": [w for w in top_words if w in filtered_words][:200],
+            "profiles": [f"@{p}" for p in top_profiles]
+        }
+    }
+
+
 def cmd_generate(args: argparse.Namespace) -> None:
     """Generate HTML pages"""
     print("=== Generating HTML pages ===")
@@ -624,6 +849,15 @@ def cmd_generate(args: argparse.Namespace) -> None:
     # Build tweet lookup
     tweet_lookup = {b["Tweet Id"]: b for b in bookmarks}
 
+    # Build category timeline data
+    category_timeline = {}
+    if categories_data:
+        print("Building category timeline data...")
+        category_timeline = build_category_timeline(bookmarks, categories_data)
+
+    # Build search index
+    search_index = build_search_index(bookmarks)
+
     # Generate individual tweet pages
     print(f"Generating {len(bookmarks)} tweet pages...")
     for bookmark in bookmarks:
@@ -642,28 +876,116 @@ def cmd_generate(args: argparse.Namespace) -> None:
         with open(MASTER_HTML_DIR / "tweets" / f"{tweet_id}.html", "w", encoding="utf-8") as f:
             f.write(page_html)
 
-    # Generate main index (chronological)
+    # Generate main index (chronological) with search
     print("Generating main index...")
-    index_content = """
+
+    # Create compact search index for embedding (suggestions only, no full index)
+    search_suggestions = json.dumps(search_index.get("suggestions", {}))
+    tweets_html = "\n".join(render_tweet_card(b, categories_data) for b in bookmarks)
+
+    index_content = f"""
 <h1>Twitter Bookmarks</h1>
-<p class="meta">{count} bookmarks</p>
-<input type="text" class="search-box" placeholder="Search tweets..." oninput="filterTweets(this.value)">
+<p class="meta">{len(bookmarks)} bookmarks</p>
+<div class="search-container">
+    <input type="text" id="search-input" class="search-box" placeholder="Search tweets... (type @ for profiles)" autocomplete="off">
+    <div id="search-suggestions" class="search-suggestions hidden"></div>
+</div>
 <div id="tweets-container">
-{tweets}
+{tweets_html}
 </div>
 <script>
-function filterTweets(query) {{
-    query = query.toLowerCase();
-    document.querySelectorAll('.tweet-card').forEach(card => {{
-        const text = card.dataset.text || '';
-        card.classList.toggle('hidden', query && !text.includes(query));
+const SUGGESTIONS = {search_suggestions};
+const searchInput = document.getElementById('search-input');
+const suggestionsDiv = document.getElementById('search-suggestions');
+let selectedIdx = -1;
+
+function showSuggestions(query) {{
+    if (!query || query.length < 2) {{
+        suggestionsDiv.classList.add('hidden');
+        return;
+    }}
+
+    const isProfile = query.startsWith('@');
+    const searchTerm = isProfile ? query.slice(1).toLowerCase() : query.toLowerCase();
+    const source = isProfile ? SUGGESTIONS.profiles : SUGGESTIONS.words;
+
+    const matches = source.filter(s => {{
+        const term = isProfile ? s.slice(1).toLowerCase() : s.toLowerCase();
+        return term.includes(searchTerm);
+    }}).slice(0, 8);
+
+    if (matches.length === 0) {{
+        suggestionsDiv.classList.add('hidden');
+        return;
+    }}
+
+    suggestionsDiv.innerHTML = matches.map((m, i) =>
+        `<div data-value="${{m}}" class="${{i === selectedIdx ? 'selected' : ''}}">${{m}}</div>`
+    ).join('');
+    suggestionsDiv.classList.remove('hidden');
+    selectedIdx = -1;
+
+    suggestionsDiv.querySelectorAll('div').forEach(div => {{
+        div.addEventListener('click', () => {{
+            searchInput.value = div.dataset.value;
+            suggestionsDiv.classList.add('hidden');
+            filterTweets(div.dataset.value);
+        }});
     }});
 }}
+
+function filterTweets(query) {{
+    query = query.toLowerCase();
+    const isProfile = query.startsWith('@');
+    const searchTerm = isProfile ? query.slice(1) : query;
+
+    document.querySelectorAll('.tweet-card').forEach(card => {{
+        const text = card.dataset.text || '';
+        let show = !query;
+        if (isProfile) {{
+            const handle = card.querySelector('.author-handle a')?.textContent?.toLowerCase() || '';
+            show = handle.includes(searchTerm);
+        }} else {{
+            show = text.includes(searchTerm);
+        }}
+        card.classList.toggle('hidden', !show);
+    }});
+}}
+
+searchInput.addEventListener('input', (e) => {{
+    showSuggestions(e.target.value);
+    filterTweets(e.target.value);
+}});
+
+searchInput.addEventListener('keydown', (e) => {{
+    const items = suggestionsDiv.querySelectorAll('div');
+    if (e.key === 'ArrowDown') {{
+        e.preventDefault();
+        selectedIdx = Math.min(selectedIdx + 1, items.length - 1);
+        items.forEach((item, i) => item.classList.toggle('selected', i === selectedIdx));
+    }} else if (e.key === 'ArrowUp') {{
+        e.preventDefault();
+        selectedIdx = Math.max(selectedIdx - 1, 0);
+        items.forEach((item, i) => item.classList.toggle('selected', i === selectedIdx));
+    }} else if (e.key === 'Tab' || e.key === 'Enter') {{
+        if (selectedIdx >= 0 && items[selectedIdx]) {{
+            e.preventDefault();
+            searchInput.value = items[selectedIdx].dataset.value;
+            suggestionsDiv.classList.add('hidden');
+            filterTweets(searchInput.value);
+        }}
+    }} else if (e.key === 'Escape') {{
+        suggestionsDiv.classList.add('hidden');
+    }}
+}});
+
+document.addEventListener('click', (e) => {{
+    if (!e.target.closest('.search-container')) {{
+        suggestionsDiv.classList.add('hidden');
+    }}
+}});
 </script>
-""".format(
-        count=len(bookmarks),
-        tweets="\n".join(render_tweet_card(b, categories_data) for b in bookmarks)
-    )
+"""
 
     # Fix nav links for index page
     index_html = HTML_BASE.format(title="Twitter Bookmarks", content=index_content)
@@ -679,18 +1001,75 @@ function filterTweets(query) {{
         print("Generating category pages...")
         categories = categories_data.get("categories", {})
 
-        # Category index
+        # Category index with timeline nav
         cat_index_content = "<h1>Categories</h1>\n"
         for cat_id, cat_info in sorted(categories.items(), key=lambda x: len(x[1].get("tweet_ids", [])), reverse=True):
             tweet_count = len(cat_info.get("tweet_ids", []))
+
+            # Build timeline nav for this category
+            timeline_html = ""
+            if cat_id in category_timeline:
+                years_data = category_timeline[cat_id]
+                sorted_years = sorted(years_data.keys(), reverse=True)
+                if sorted_years:
+                    year_links = []
+                    for year in sorted_years:
+                        year_total = sum(years_data[year].values())
+                        year_links.append(f'<span class="year-link" data-year="{year}" data-cat="{cat_id}">{year} ({year_total})</span>')
+                    timeline_html = f'''
+    <div class="timeline-nav" data-timeline='{json.dumps(years_data)}'>
+        <div class="year-row">{" ".join(year_links)}</div>
+        <div class="month-row hidden"></div>
+    </div>'''
+
             cat_index_content += f"""
-<div class="tweet-card">
+<div class="tweet-card category-card" data-cat="{cat_id}">
     <h3><a href="{cat_id}.html">{cat_info.get('name', cat_id)}</a></h3>
     <p>{cat_info.get('description', '')}</p>
-    <p class="meta">{tweet_count} bookmarks</p>
+    <p class="meta">{tweet_count} bookmarks</p>{timeline_html}
 </div>
 """
 
+        # Add JavaScript for timeline expand/collapse
+        timeline_js = """
+<script>
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+document.querySelectorAll('.year-link').forEach(link => {
+    link.addEventListener('click', function() {
+        const card = this.closest('.category-card');
+        const nav = this.closest('.timeline-nav');
+        const timeline = JSON.parse(nav.dataset.timeline);
+        const year = this.dataset.year;
+        const cat = this.dataset.cat;
+        const monthRow = nav.querySelector('.month-row');
+
+        // Toggle active state
+        const wasActive = this.classList.contains('active');
+        nav.querySelectorAll('.year-link').forEach(l => l.classList.remove('active'));
+
+        if (wasActive) {
+            monthRow.classList.add('hidden');
+            monthRow.innerHTML = '';
+        } else {
+            this.classList.add('active');
+            const months = timeline[year] || {};
+            const monthLinks = [];
+            for (let m = 1; m <= 12; m++) {
+                const mm = m.toString().padStart(2, '0');
+                const count = months[mm] || 0;
+                if (count > 0) {
+                    monthLinks.push(`<a href="${cat}.html?year=${year}&month=${mm}" class="month-link">${MONTH_NAMES[m-1]} (${count})</a>`);
+                }
+            }
+            monthRow.innerHTML = monthLinks.join('');
+            monthRow.classList.remove('hidden');
+        }
+    });
+});
+</script>
+"""
+        cat_index_content += timeline_js
         cat_index_html = HTML_BASE.format(title="Categories", content=cat_index_content)
         cat_index_html = cat_index_html.replace('../index.html', '../index.html')
         with open(MASTER_HTML_DIR / "categories" / "index.html", "w", encoding="utf-8") as f:
@@ -711,13 +1090,123 @@ function filterTweets(query) {{
                 if sorted_periods:
                     summary_html = f'<div class="summary">{summaries[sorted_periods[0]]}</div>'
 
+            # Build year/month filter bar for category page
+            cat_timeline = category_timeline.get(cat_id, {})
+            filter_html = ""
+            if cat_timeline:
+                sorted_years = sorted(cat_timeline.keys(), reverse=True)
+                year_btns = []
+                for year in sorted_years:
+                    year_total = sum(cat_timeline[year].values())
+                    year_btns.append(f'<button class="filter-btn year-btn" data-year="{year}">{year} ({year_total})</button>')
+                filter_html = f'''
+<div class="filter-bar">
+    <button class="filter-btn active" data-year="all">All ({len(cat_tweets)})</button>
+    {" ".join(year_btns)}
+</div>
+<div class="month-filter hidden"></div>
+'''
+
             cat_content = f"""
 <h1>{cat_info.get('name', cat_id)}</h1>
-<p class="meta">{len(cat_tweets)} bookmarks</p>
+<p class="meta"><span id="visible-count">{len(cat_tweets)}</span> bookmarks</p>
+{filter_html}
 {summary_html}
 <div id="tweets-container">
 {"".join(render_tweet_card(t, categories_data) for t in cat_tweets)}
 </div>
+<script>
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const catTimeline = {json.dumps(cat_timeline)};
+
+// Parse URL params on load
+const params = new URLSearchParams(window.location.search);
+const filterYear = params.get('year');
+const filterMonth = params.get('month');
+
+function filterTweets(year, month) {{
+    let visibleCount = 0;
+    document.querySelectorAll('.tweet-card').forEach(card => {{
+        const dateSpan = card.querySelector('.tweet-stats span:last-child');
+        if (!dateSpan) return;
+        const dateMatch = dateSpan.textContent.match(/([A-Z][a-z]+) (\\d+), (\\d+)/);
+        if (!dateMatch) return;
+
+        const tweetMonth = MONTH_NAMES.indexOf(dateMatch[1]) + 1;
+        const tweetYear = dateMatch[3];
+        const mm = tweetMonth.toString().padStart(2, '0');
+
+        let show = true;
+        if (year && year !== 'all') {{
+            show = tweetYear === year;
+            if (show && month) {{
+                show = mm === month;
+            }}
+        }}
+        card.classList.toggle('hidden', !show);
+        if (show) visibleCount++;
+    }});
+    document.getElementById('visible-count').textContent = visibleCount;
+}}
+
+// Setup filter buttons
+document.querySelectorAll('.year-btn').forEach(btn => {{
+    btn.addEventListener('click', function() {{
+        const year = this.dataset.year;
+        document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+        this.classList.add('active');
+
+        // Show month filter if year selected
+        const monthFilter = document.querySelector('.month-filter');
+        if (year !== 'all' && catTimeline[year]) {{
+            const months = catTimeline[year];
+            const monthBtns = ['<button class="filter-btn month-btn active" data-month="">All months</button>'];
+            for (let m = 1; m <= 12; m++) {{
+                const mm = m.toString().padStart(2, '0');
+                if (months[mm]) {{
+                    monthBtns.push(`<button class="filter-btn month-btn" data-month="${{mm}}">${{MONTH_NAMES[m-1]}} (${{months[mm]}})</button>`);
+                }}
+            }}
+            monthFilter.innerHTML = monthBtns.join('');
+            monthFilter.classList.remove('hidden');
+
+            // Attach month btn handlers
+            monthFilter.querySelectorAll('.month-btn').forEach(mbtn => {{
+                mbtn.addEventListener('click', function() {{
+                    monthFilter.querySelectorAll('.month-btn').forEach(b => b.classList.remove('active'));
+                    this.classList.add('active');
+                    filterTweets(year, this.dataset.month);
+                }});
+            }});
+        }} else {{
+            monthFilter.classList.add('hidden');
+        }}
+        filterTweets(year, '');
+    }});
+}});
+
+// All button handler
+document.querySelector('.filter-btn[data-year="all"]')?.addEventListener('click', function() {{
+    document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+    this.classList.add('active');
+    document.querySelector('.month-filter')?.classList.add('hidden');
+    filterTweets('all', '');
+}});
+
+// Apply initial filter from URL
+if (filterYear) {{
+    const yearBtn = document.querySelector(`.year-btn[data-year="${{filterYear}}"]`);
+    if (yearBtn) {{
+        yearBtn.click();
+        if (filterMonth) {{
+            setTimeout(() => {{
+                const monthBtn = document.querySelector(`.month-btn[data-month="${{filterMonth}}"]`);
+                if (monthBtn) monthBtn.click();
+            }}, 100);
+        }}
+    }}
+}}
+</script>
 """
 
             cat_html = HTML_BASE.format(title=cat_info.get('name', cat_id), content=cat_content)
@@ -933,6 +1422,215 @@ def cmd_cleanup_raw(args: argparse.Namespace) -> None:
     print(f"Deleted {RAW_DIR}")
 
 
+def cmd_update(args: argparse.Namespace) -> None:
+    """Incremental update: merge new, categorize new only, regenerate HTML"""
+    print("=== Incremental Update ===")
+
+    # Step 1: Load existing data
+    existing_ids: set[str] = set()
+    existing_categories: dict = {"categories": {}, "tweet_categories": {}}
+
+    if MASTER_JSON.exists():
+        with open(MASTER_JSON, "r", encoding="utf-8") as f:
+            existing_bookmarks = json.load(f)
+            existing_ids = {b["Tweet Id"] for b in existing_bookmarks}
+        print(f"Existing bookmarks: {len(existing_ids)}")
+
+    if MASTER_CATEGORIES.exists():
+        with open(MASTER_CATEGORIES, "r", encoding="utf-8") as f:
+            existing_categories = json.load(f)
+        print(f"Existing categories: {len(existing_categories.get('categories', {}))}")
+
+    # Step 2: Merge new JSON files
+    print("\n--- Merging new bookmarks ---")
+    all_bookmarks = load_all_json_files()
+    if not all_bookmarks:
+        print("No new JSON files found.")
+        return
+
+    deduped = deduplicate_bookmarks(all_bookmarks)
+    new_ids = {b["Tweet Id"] for b in deduped} - existing_ids
+    print(f"New bookmarks to process: {len(new_ids)}")
+
+    # Sort and save merged bookmarks - parse actual date, not string sort
+    from datetime import timezone
+    deduped.sort(key=lambda x: parse_tweet_date(x.get("Created At", "")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
+    MASTER_DIR.mkdir(parents=True, exist_ok=True)
+    with open(MASTER_JSON, "w", encoding="utf-8") as f:
+        json.dump(deduped, f, indent=2, ensure_ascii=False)
+    print(f"Saved {len(deduped)} total bookmarks to {MASTER_JSON}")
+
+    # Step 3: Consolidate new media
+    print("\n--- Consolidating media ---")
+    cmd_consolidate(args)
+
+    # Step 4: Categorize only NEW tweets
+    if new_ids:
+        print(f"\n--- Categorizing {len(new_ids)} new bookmarks ---")
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            print("Warning: ANTHROPIC_API_KEY not set. Skipping categorization.")
+            print("Set it with: export ANTHROPIC_API_KEY='your-key-here'")
+        else:
+            try:
+                import anthropic
+                client = anthropic.Anthropic(api_key=api_key)
+
+                # Get new bookmarks
+                new_bookmarks = [b for b in deduped if b["Tweet Id"] in new_ids]
+
+                # Get existing category list for context
+                existing_cat_info = existing_categories.get("categories", {})
+                existing_cat_list = ", ".join(existing_cat_info.keys()) if existing_cat_info else ""
+
+                # Phase 1: Check if we need new categories (sample new tweets)
+                sample_size = min(50, len(new_bookmarks))
+                sample_texts = [b.get("Full Text", "")[:300] for b in new_bookmarks[:sample_size]]
+
+                if existing_cat_list:
+                    taxonomy_prompt = f"""Here are existing categories: {existing_cat_list}
+
+Analyze these {sample_size} NEW Twitter bookmarks. Determine if any new categories are needed.
+
+Return JSON with ONLY new categories (if any). Use kebab-case IDs:
+{{
+  "new_categories": {{
+    "category-id": {{
+      "name": "Human Readable Name",
+      "description": "Brief description"
+    }}
+  }}
+}}
+
+If no new categories needed, return: {{"new_categories": {{}}}}
+
+New tweets:
+{chr(10).join(f'- {t[:150]}...' for t in sample_texts[:20])}
+"""
+                else:
+                    taxonomy_prompt = f"""Analyze these {sample_size} Twitter bookmarks and create a category taxonomy.
+
+Create 10-20 categories. Use kebab-case for IDs:
+{{
+  "new_categories": {{
+    "category-id": {{
+      "name": "Human Readable Name",
+      "description": "Brief description"
+    }}
+  }}
+}}
+
+Tweets:
+{chr(10).join(f'- {t[:150]}...' for t in sample_texts[:20])}
+"""
+
+                response = client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=2000,
+                    messages=[{"role": "user", "content": taxonomy_prompt}]
+                )
+
+                try:
+                    taxonomy_text = response.content[0].text
+                    if "```json" in taxonomy_text:
+                        taxonomy_text = taxonomy_text.split("```json")[1].split("```")[0]
+                    elif "```" in taxonomy_text:
+                        taxonomy_text = taxonomy_text.split("```")[1].split("```")[0]
+                    taxonomy = json.loads(taxonomy_text)
+                    new_categories = taxonomy.get("new_categories", {})
+
+                    if new_categories:
+                        print(f"Discovered {len(new_categories)} new categories:")
+                        for cat_id, cat_info in new_categories.items():
+                            print(f"  + {cat_id}: {cat_info.get('name', cat_id)}")
+                            existing_cat_info[cat_id] = cat_info
+                except (json.JSONDecodeError, IndexError) as e:
+                    print(f"Warning: Error parsing taxonomy: {e}")
+                    new_categories = {}
+
+                # Phase 2: Categorize new tweets
+                all_cat_list = ", ".join(existing_cat_info.keys())
+                tweet_categories = dict(existing_categories.get("tweet_categories", {}))
+                category_tweets: dict[str, list[str]] = defaultdict(list)
+
+                # Rebuild category_tweets from existing data
+                for cat_id, cat_info in existing_cat_info.items():
+                    if "tweet_ids" in cat_info:
+                        category_tweets[cat_id] = list(cat_info.get("tweet_ids", []))
+
+                batch_size = 20
+                for i in range(0, len(new_bookmarks), batch_size):
+                    batch = new_bookmarks[i:i + batch_size]
+                    print(f"Categorizing batch {i // batch_size + 1}/{(len(new_bookmarks) + batch_size - 1) // batch_size}...")
+
+                    batch_prompt = f"""Categorize these tweets. Available categories: {all_cat_list}
+
+Assign 1-3 categories to each tweet. Return JSON only:
+{{"tweet_id": ["category1", "category2"]}}
+
+Tweets:
+"""
+                    for b in batch:
+                        batch_prompt += f'\n{b.get("Tweet Id")}: {b.get("Full Text", "")[:300]}'
+
+                    response = client.messages.create(
+                        model="claude-sonnet-4-20250514",
+                        max_tokens=2000,
+                        messages=[{"role": "user", "content": batch_prompt}]
+                    )
+
+                    try:
+                        result_text = response.content[0].text
+                        if "```json" in result_text:
+                            result_text = result_text.split("```json")[1].split("```")[0]
+                        elif "```" in result_text:
+                            result_text = result_text.split("```")[1].split("```")[0]
+                        batch_results = json.loads(result_text)
+
+                        for tweet_id, cats in batch_results.items():
+                            tweet_categories[tweet_id] = cats
+                            for cat in cats:
+                                if cat in existing_cat_info and tweet_id not in category_tweets[cat]:
+                                    category_tweets[cat].append(tweet_id)
+                    except (json.JSONDecodeError, IndexError) as e:
+                        print(f"  Warning: Error parsing batch: {e}")
+
+                # Build updated categories structure
+                final_categories = {
+                    "categories": {},
+                    "tweet_categories": tweet_categories
+                }
+
+                for cat_id, cat_info in existing_cat_info.items():
+                    final_categories["categories"][cat_id] = {
+                        "name": cat_info.get("name", cat_id),
+                        "description": cat_info.get("description", ""),
+                        "tweet_ids": category_tweets.get(cat_id, []),
+                        "summaries": existing_categories.get("categories", {}).get(cat_id, {}).get("summaries", {})
+                    }
+
+                with open(MASTER_CATEGORIES, "w", encoding="utf-8") as f:
+                    json.dump(final_categories, f, indent=2, ensure_ascii=False)
+
+                print(f"Updated categories: {len(tweet_categories)} tweets categorized")
+
+            except ImportError:
+                print("Warning: anthropic package not installed. Skipping categorization.")
+    else:
+        print("\nNo new bookmarks to categorize.")
+
+    # Step 5: Regenerate HTML
+    print("\n--- Regenerating HTML ---")
+    cmd_generate(args)
+
+    # Step 6: Export
+    print("\n--- Exporting ---")
+    cmd_export(args)
+
+    print("\n=== Update complete ===")
+
+
 def cmd_all(args: argparse.Namespace) -> None:
     """Run merge, consolidate, generate, and export"""
     cmd_merge(args)
@@ -958,6 +1656,7 @@ def main():
     subparsers.add_parser("categorize", help="Categorize bookmarks with AI")
     subparsers.add_parser("generate", help="Generate HTML pages")
     subparsers.add_parser("export", help="Export for NotebookLM")
+    subparsers.add_parser("update", help="Incremental update: merge new, categorize new only, regenerate")
     subparsers.add_parser("clean", help="Delete generated files (master/) to re-run")
     subparsers.add_parser("cleanup-raw", help="Delete raw exports (DESTRUCTIVE)")
     subparsers.add_parser("all", help="Run merge, consolidate, generate, export")
@@ -974,6 +1673,7 @@ def main():
         "categorize": cmd_categorize,
         "generate": cmd_generate,
         "export": cmd_export,
+        "update": cmd_update,
         "clean": cmd_clean,
         "cleanup-raw": cmd_cleanup_raw,
         "all": cmd_all,
