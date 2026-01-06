@@ -14,6 +14,8 @@ Usage:
     python bookmark_merger.py stories     # Generate AI stories for categories
     python bookmark_merger.py update      # Incremental: merge new, categorize new only
     python bookmark_merger.py all         # Run merge, consolidate, generate, export
+    python bookmark_merger.py publish     # Publish to dethele.com/twitter (CDN media)
+    python bookmark_merger.py unpublish   # Remove from dethele.com (DESTRUCTIVE)
     python bookmark_merger.py clean       # Delete generated files to re-run
     python bookmark_merger.py cleanup-raw # Delete raw exports (DESTRUCTIVE)
 """
@@ -1101,7 +1103,7 @@ TWEET_TEMPLATE = """
 
 
 def render_media_html(tweet_id: str, media_dir: Path) -> str:
-    """Render HTML for tweet media"""
+    """Render HTML for tweet media using local files"""
     tweet_media_dir = media_dir / tweet_id
     if not tweet_media_dir.exists():
         return ""
@@ -1122,9 +1124,35 @@ def render_media_html(tweet_id: str, media_dir: Path) -> str:
     return "\n".join(html_parts) if len(html_parts) > 2 else ""
 
 
+def render_media_html_cdn(bookmark: dict) -> str:
+    """Render HTML for tweet media using Twitter CDN URLs"""
+    media_urls = bookmark.get("Media URLs", "")
+    media_types = bookmark.get("Media Types", "")
+
+    if not media_urls:
+        return ""
+
+    urls = [u.strip() for u in media_urls.split(",") if u.strip()]
+    types = [t.strip() for t in media_types.split(",")] if media_types else []
+
+    if not urls:
+        return ""
+
+    html_parts = ['<div class="tweet-media">']
+    for i, url in enumerate(urls):
+        media_type = types[i] if i < len(types) else ""
+        if media_type == "video" or any(ext in url.lower() for ext in ['.mp4', '.webm', '.mov']):
+            html_parts.append(f'<video src="{url}" controls preload="metadata"></video>')
+        else:
+            html_parts.append(f'<img src="{url}" alt="Tweet media" loading="lazy">')
+    html_parts.append('</div>')
+
+    return "\n".join(html_parts) if len(html_parts) > 2 else ""
+
+
 def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
-                      include_detail_link: bool = True) -> str:
-    """Render a tweet card HTML"""
+                      include_detail_link: bool = True, use_cdn: bool = False) -> str:
+    """Render a tweet card HTML. If use_cdn=True, uses Twitter CDN URLs for media."""
     tweet_id = bookmark.get("Tweet Id", "")
 
     # Get categories for this tweet
@@ -1148,13 +1176,19 @@ def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
 
     detail_link = f' | <a href="../tweets/{tweet_id}.html">Details</a>' if include_detail_link else ""
 
+    # Use CDN or local media
+    if use_cdn:
+        media_html = render_media_html_cdn(bookmark)
+    else:
+        media_html = render_media_html(tweet_id, MASTER_MEDIA_DIR)
+
     return TWEET_TEMPLATE.format(
         tweet_id=tweet_id,
         avatar_url=bookmark.get("User Avatar Url", ""),
         name=bookmark.get("User Name", "Unknown"),
         screen_name=bookmark.get("User Screen Name", "unknown"),
         text=bookmark.get("Full Text", ""),
-        media_html=render_media_html(tweet_id, MASTER_MEDIA_DIR),
+        media_html=media_html,
         categories_html=categories_html,
         likes=bookmark.get("Favorite Count", 0),
         retweets=bookmark.get("Retweet Count", 0),
@@ -2448,6 +2482,235 @@ def cmd_all(args: argparse.Namespace) -> None:
     cmd_export(args)
 
 
+# ==================== Publish Commands ====================
+
+GITHUB_PAGES_REPO = "b3rntsen/b3rntsen.github.io"
+PUBLISH_SUBDIR = "twitter"
+
+
+def generate_html_cdn(output_dir: Path, bookmarks: list[dict], categories_data: dict,
+                      stories_data: dict) -> None:
+    """Generate HTML pages using Twitter CDN for media (no local media needed)"""
+    import tempfile
+
+    html_dir = output_dir / "html"
+    html_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create subdirectories
+    (html_dir / "categories").mkdir(exist_ok=True)
+    (html_dir / "timeline").mkdir(exist_ok=True)
+    (html_dir / "tweets").mkdir(exist_ok=True)
+    (html_dir / "stories").mkdir(exist_ok=True)
+
+    tweet_lookup = {b["Tweet Id"]: b for b in bookmarks}
+    timeline_data = build_category_timeline(bookmarks, categories_data)
+
+    # Build search index (not used for CDN version, but function prints progress)
+    print("Building search index...")
+    _ = build_search_index(bookmarks)
+
+    # Generate main index (chronological)
+    print("Generating main index...")
+    sorted_bookmarks = sorted(
+        bookmarks,
+        key=lambda x: parse_tweet_date(x.get("Created At", "")) or datetime.min.replace(tzinfo=None),
+        reverse=True
+    )
+    tweets_html = "\n".join(render_tweet_card(b, categories_data, use_cdn=True) for b in sorted_bookmarks)
+    # Simplified search (no autocomplete data for published version)
+    content = f'''
+<h1>Twitter Bookmarks</h1>
+<p class="meta">{len(bookmarks)} bookmarks</p>
+<div class="tweet-list">
+{tweets_html}
+</div>
+'''
+    page = HTML_BASE.format(title="Twitter Bookmarks", content=content)
+    # Remove media path replacements (CDN URLs are absolute)
+    with open(html_dir / "index.html", "w", encoding="utf-8") as f:
+        f.write(page)
+
+    # Generate category index
+    print("Generating category pages...")
+    categories = categories_data.get("categories", {})
+    cat_list_html = ""
+    for cat_id, cat_info in sorted(categories.items(), key=lambda x: x[1].get("name", x[0])):
+        tweet_count = len(cat_info.get("tweet_ids", []))
+        cat_list_html += f'''
+<div class="category-card">
+    <h3><a href="categories/{cat_id}.html">{cat_info.get("name", cat_id)}</a></h3>
+    <p>{cat_info.get("description", "")[:200]}</p>
+    <span class="meta">{tweet_count} bookmarks</span>
+</div>
+'''
+    content = f'''
+<h1>Categories</h1>
+<div class="category-list">
+{cat_list_html}
+</div>
+'''
+    page = HTML_BASE.format(title="Categories", content=content)
+    with open(html_dir / "categories" / "index.html", "w", encoding="utf-8") as f:
+        f.write(page)
+
+    # Generate individual category pages
+    for cat_id, cat_info in categories.items():
+        cat_tweets = [tweet_lookup[tid] for tid in cat_info.get("tweet_ids", []) if tid in tweet_lookup]
+        cat_tweets.sort(
+            key=lambda x: parse_tweet_date(x.get("Created At", "")) or datetime.min.replace(tzinfo=None),
+            reverse=True
+        )
+        tweets_html = "\n".join(render_tweet_card(b, categories_data, use_cdn=True) for b in cat_tweets)
+        content = f'''
+<h1>{cat_info.get("name", cat_id)}</h1>
+<p class="meta">{len(cat_tweets)} bookmarks</p>
+<p>{cat_info.get("description", "")}</p>
+<div class="tweet-list">
+{tweets_html}
+</div>
+'''
+        page = HTML_BASE.format(title=cat_info.get("name", cat_id), content=content)
+        with open(html_dir / "categories" / f"{cat_id}.html", "w", encoding="utf-8") as f:
+            f.write(page)
+
+    # Generate stories pages if available
+    if stories_data and stories_data.get("category_years"):
+        print("Generating story pages...")
+        generate_stories_index(stories_data, categories_data)
+        # Copy stories from master to output
+        src_stories = MASTER_HTML_DIR / "stories"
+        if src_stories.exists():
+            import shutil as sh
+            dst_stories = html_dir / "stories"
+            if dst_stories.exists():
+                sh.rmtree(dst_stories)
+            sh.copytree(src_stories, dst_stories)
+
+    print(f"Generated CDN-based HTML in {html_dir}")
+
+
+def cmd_publish(args: argparse.Namespace) -> None:
+    """Publish HTML with Twitter CDN links to GitHub Pages"""
+    import subprocess
+    import tempfile
+
+    # Check for required data
+    if not MASTER_JSON.exists():
+        print("Error: No bookmarks found. Run 'merge' first.")
+        return
+
+    with open(MASTER_JSON, "r", encoding="utf-8") as f:
+        bookmarks = json.load(f)
+
+    categories_data = {}
+    if MASTER_CATEGORIES.exists():
+        with open(MASTER_CATEGORIES, "r", encoding="utf-8") as f:
+            categories_data = json.load(f)
+
+    stories_data = {}
+    if MASTER_STORIES.exists():
+        with open(MASTER_STORIES, "r", encoding="utf-8") as f:
+            stories_data = json.load(f)
+
+    print(f"=== Publishing to {GITHUB_PAGES_REPO}/{PUBLISH_SUBDIR} ===")
+
+    # Create temp directory for generated content
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        gen_dir = tmpdir / "generated"
+
+        # Generate HTML with CDN links
+        print("\nGenerating HTML with Twitter CDN links...")
+        generate_html_cdn(gen_dir, bookmarks, categories_data, stories_data)
+
+        # Clone the GitHub Pages repo
+        print(f"\nCloning {GITHUB_PAGES_REPO}...")
+        repo_dir = tmpdir / "repo"
+        result = subprocess.run(
+            ["git", "clone", "--depth", "1", f"git@github.com:{GITHUB_PAGES_REPO}.git", str(repo_dir)],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(f"Error cloning repo: {result.stderr}")
+            return
+
+        # Remove existing twitter folder if it exists
+        publish_dir = repo_dir / PUBLISH_SUBDIR
+        if publish_dir.exists():
+            shutil.rmtree(publish_dir)
+
+        # Copy generated HTML to publish directory
+        shutil.copytree(gen_dir / "html", publish_dir)
+
+        # Commit and push
+        print("\nCommitting and pushing...")
+        subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+
+        # Check if there are changes to commit
+        result = subprocess.run(
+            ["git", "diff", "--staged", "--quiet"],
+            cwd=repo_dir, capture_output=True
+        )
+        if result.returncode == 0:
+            print("No changes to publish.")
+            return
+
+        subprocess.run(
+            ["git", "commit", "-m", f"Update {PUBLISH_SUBDIR} bookmarks"],
+            cwd=repo_dir, check=True
+        )
+        subprocess.run(["git", "push"], cwd=repo_dir, check=True)
+
+        print(f"\n✓ Published to https://dethele.com/{PUBLISH_SUBDIR}/")
+
+
+def cmd_unpublish(args: argparse.Namespace) -> None:
+    """Remove published content from GitHub Pages"""
+    import subprocess
+    import tempfile
+
+    print(f"=== Unpublishing {PUBLISH_SUBDIR} from {GITHUB_PAGES_REPO} ===")
+
+    confirm = input(f"This will remove {PUBLISH_SUBDIR}/ from {GITHUB_PAGES_REPO}. Type 'DELETE' to confirm: ")
+    if confirm != "DELETE":
+        print("Cancelled.")
+        return
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+
+        # Clone the repo
+        print(f"\nCloning {GITHUB_PAGES_REPO}...")
+        repo_dir = tmpdir / "repo"
+        result = subprocess.run(
+            ["git", "clone", "--depth", "1", f"git@github.com:{GITHUB_PAGES_REPO}.git", str(repo_dir)],
+            capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            print(f"Error cloning repo: {result.stderr}")
+            return
+
+        # Check if folder exists
+        publish_dir = repo_dir / PUBLISH_SUBDIR
+        if not publish_dir.exists():
+            print(f"{PUBLISH_SUBDIR}/ does not exist in repo.")
+            return
+
+        # Remove the folder
+        shutil.rmtree(publish_dir)
+
+        # Commit and push
+        print("\nCommitting and pushing...")
+        subprocess.run(["git", "add", "."], cwd=repo_dir, check=True)
+        subprocess.run(
+            ["git", "commit", "-m", f"Remove {PUBLISH_SUBDIR}"],
+            cwd=repo_dir, check=True
+        )
+        subprocess.run(["git", "push"], cwd=repo_dir, check=True)
+
+        print(f"\n✓ Unpublished {PUBLISH_SUBDIR}/ from {GITHUB_PAGES_REPO}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Twitter Bookmarks Merger Tool",
@@ -2474,6 +2737,10 @@ def main():
     stories_parser.add_argument("--min-tweets", type=int, default=10, help="Minimum tweets for story (default: 10)")
     stories_parser.add_argument("--category", type=str, help="Generate for specific category only")
 
+    # Publish commands
+    subparsers.add_parser("publish", help="Publish to GitHub Pages (dethele.com/twitter) using Twitter CDN")
+    subparsers.add_parser("unpublish", help="Remove from GitHub Pages (DESTRUCTIVE)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -2491,6 +2758,8 @@ def main():
         "cleanup-raw": cmd_cleanup_raw,
         "all": cmd_all,
         "stories": cmd_stories,
+        "publish": cmd_publish,
+        "unpublish": cmd_unpublish,
     }
 
     commands[args.command](args)
