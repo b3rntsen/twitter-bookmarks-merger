@@ -2488,6 +2488,44 @@ GITHUB_PAGES_REPO = "b3rntsen/b3rntsen.github.io"
 PUBLISH_SUBDIR = "twitter"
 
 
+def fix_paths_for_publish(html: str, depth: int = 0) -> str:
+    """Fix relative paths for published version at /twitter/
+
+    depth=0: page at /twitter/index.html
+    depth=1: page at /twitter/categories/index.html
+    depth=2: page at /twitter/stories/cat/year.html
+    """
+    # Navigation paths in HTML_BASE use ../
+    # We need to adjust based on page depth
+
+    if depth == 0:
+        # Root level: /twitter/index.html
+        # ../index.html -> index.html (self)
+        # ../categories/ -> categories/
+        # ../timeline/ -> timeline/
+        # ../stories/ -> stories/
+        # ../tweets/ -> tweets/
+        html = html.replace('href="../index.html"', 'href="index.html"')
+        html = html.replace('href="../categories/', 'href="categories/')
+        html = html.replace('href="../timeline/', 'href="timeline/')
+        html = html.replace('href="../stories/', 'href="stories/')
+        html = html.replace('href="../tweets/', 'href="tweets/')
+    elif depth == 1:
+        # One level deep: /twitter/categories/index.html
+        # Paths are already correct (../ goes to /twitter/)
+        pass
+    elif depth == 2:
+        # Two levels deep: /twitter/stories/cat/year.html
+        # Need to go up two levels to /twitter/
+        html = html.replace('href="../index.html"', 'href="../../index.html"')
+        html = html.replace('href="../categories/', 'href="../../categories/')
+        html = html.replace('href="../timeline/', 'href="../../timeline/')
+        html = html.replace('href="../stories/', 'href="../../stories/')
+        html = html.replace('href="../tweets/', 'href="../../tweets/')
+
+    return html
+
+
 def generate_html_cdn(output_dir: Path, bookmarks: list[dict], categories_data: dict,
                       stories_data: dict) -> None:
     """Generate HTML pages using Twitter CDN for media (no local media needed)"""
@@ -2526,7 +2564,7 @@ def generate_html_cdn(output_dir: Path, bookmarks: list[dict], categories_data: 
 </div>
 '''
     page = HTML_BASE.format(title="Twitter Bookmarks", content=content)
-    # Remove media path replacements (CDN URLs are absolute)
+    page = fix_paths_for_publish(page, depth=0)  # Root level
     with open(html_dir / "index.html", "w", encoding="utf-8") as f:
         f.write(page)
 
@@ -2538,7 +2576,7 @@ def generate_html_cdn(output_dir: Path, bookmarks: list[dict], categories_data: 
         tweet_count = len(cat_info.get("tweet_ids", []))
         cat_list_html += f'''
 <div class="category-card">
-    <h3><a href="categories/{cat_id}.html">{cat_info.get("name", cat_id)}</a></h3>
+    <h3><a href="{cat_id}.html">{cat_info.get("name", cat_id)}</a></h3>
     <p>{cat_info.get("description", "")[:200]}</p>
     <span class="meta">{tweet_count} bookmarks</span>
 </div>
@@ -2550,6 +2588,7 @@ def generate_html_cdn(output_dir: Path, bookmarks: list[dict], categories_data: 
 </div>
 '''
     page = HTML_BASE.format(title="Categories", content=content)
+    page = fix_paths_for_publish(page, depth=1)  # One level deep
     with open(html_dir / "categories" / "index.html", "w", encoding="utf-8") as f:
         f.write(page)
 
@@ -2570,6 +2609,7 @@ def generate_html_cdn(output_dir: Path, bookmarks: list[dict], categories_data: 
 </div>
 '''
         page = HTML_BASE.format(title=cat_info.get("name", cat_id), content=content)
+        page = fix_paths_for_publish(page, depth=1)  # One level deep
         with open(html_dir / "categories" / f"{cat_id}.html", "w", encoding="utf-8") as f:
             f.write(page)
 
@@ -2585,6 +2625,29 @@ def generate_html_cdn(output_dir: Path, bookmarks: list[dict], categories_data: 
             if dst_stories.exists():
                 sh.rmtree(dst_stories)
             sh.copytree(src_stories, dst_stories)
+
+            # Fix paths in copied story files
+            for html_file in dst_stories.glob("**/*.html"):
+                with open(html_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                # Determine depth based on file location
+                rel_path = html_file.relative_to(dst_stories)
+                depth = len(rel_path.parts)  # index.html=1, cat/year.html=2
+
+                if depth == 1:
+                    # stories/index.html
+                    content = fix_paths_for_publish(content, depth=1)
+                else:
+                    # stories/cat/year.html
+                    content = fix_paths_for_publish(content, depth=2)
+
+                # Remove local media paths (they won't work anyway)
+                # Replace with placeholder or remove media sections
+                content = content.replace('../../../media/', 'https://via.placeholder.com/400x300?text=Media+Unavailable&')
+
+                with open(html_file, "w", encoding="utf-8") as f:
+                    f.write(content)
 
     print(f"Generated CDN-based HTML in {html_dir}")
 
