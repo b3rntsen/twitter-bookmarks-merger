@@ -739,6 +739,34 @@ HTML_BASE = """<!DOCTYPE html>
             max-width: 100%;
             border-radius: 12px;
         }}
+        .video-thumbnail {{
+            display: inline-block;
+            text-decoration: none;
+        }}
+        .video-placeholder {{
+            width: 280px;
+            height: 160px;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%);
+            border-radius: 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }}
+        .video-placeholder:hover {{
+            transform: scale(1.02);
+            box-shadow: 0 4px 20px rgba(29, 155, 240, 0.3);
+        }}
+        .play-icon {{
+            font-size: 2.5em;
+            color: #1d9bf0;
+        }}
+        .video-label {{
+            color: #8899a6;
+            font-size: 0.9em;
+        }}
         .tweet-stats {{
             color: var(--secondary);
             font-size: 0.85em;
@@ -1125,9 +1153,12 @@ def render_media_html(tweet_id: str, media_dir: Path) -> str:
 
 
 def render_media_html_cdn(bookmark: dict) -> str:
-    """Render HTML for tweet media using Twitter CDN URLs"""
+    """Render HTML for tweet media using Twitter CDN URLs.
+    Videos are shown as thumbnails with play overlay linking to tweet (Twitter blocks video CDN).
+    """
     media_urls = bookmark.get("Media URLs", "")
     media_types = bookmark.get("Media Types", "")
+    tweet_url = bookmark.get("Tweet URL", "")
 
     if not media_urls:
         return ""
@@ -1142,7 +1173,13 @@ def render_media_html_cdn(bookmark: dict) -> str:
     for i, url in enumerate(urls):
         media_type = types[i] if i < len(types) else ""
         if media_type == "video" or any(ext in url.lower() for ext in ['.mp4', '.webm', '.mov']):
-            html_parts.append(f'<video src="{url}" controls preload="metadata"></video>')
+            # Video: show thumbnail placeholder with play button linking to tweet
+            html_parts.append(f'''<a href="{tweet_url}" target="_blank" class="video-thumbnail" title="View video on X">
+    <div class="video-placeholder">
+        <span class="play-icon">▶</span>
+        <span class="video-label">Video - View on X</span>
+    </div>
+</a>''')
         else:
             html_parts.append(f'<img src="{url}" alt="Tweet media" loading="lazy">')
     html_parts.append('</div>')
