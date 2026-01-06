@@ -29,6 +29,10 @@ python3 tools/bookmark_merger.py stories --list-categories # Show available cate
 python3 tools/bookmark_merger.py stories --category ai-machine-learning  # Specific category
 python3 tools/bookmark_merger.py stories --force-year 2025 # Force regenerate year
 
+# Publishing (uses Twitter CDN for media, no local files needed)
+python3 tools/bookmark_merger.py publish    # Publish to dethele.com/twitter
+python3 tools/bookmark_merger.py unpublish  # Remove from dethele.com (DESTRUCTIVE)
+
 # Cleanup commands
 python3 tools/bookmark_merger.py clean        # Delete master/ to re-run (safe)
 python3 tools/bookmark_merger.py cleanup-raw  # Delete raw/ (DESTRUCTIVE, separate step)
