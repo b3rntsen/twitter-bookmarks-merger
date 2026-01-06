@@ -23,6 +23,12 @@ python3 tools/bookmark_merger.py all          # Run merge, consolidate, generate
 # Incremental update (preferred for adding new exports)
 python3 tools/bookmark_merger.py update       # Merge new, categorize NEW only, regenerate
 
+# AI Stories (generates narrative timelines per category/year)
+python3 tools/bookmark_merger.py stories                  # Generate all stories
+python3 tools/bookmark_merger.py stories --list-categories # Show available categories
+python3 tools/bookmark_merger.py stories --category ai-machine-learning  # Specific category
+python3 tools/bookmark_merger.py stories --force-year 2025 # Force regenerate year
+
 # Cleanup commands
 python3 tools/bookmark_merger.py clean        # Delete master/ to re-run (safe)
 python3 tools/bookmark_merger.py cleanup-raw  # Delete raw/ (DESTRUCTIVE, separate step)

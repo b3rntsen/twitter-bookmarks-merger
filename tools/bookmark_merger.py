@@ -11,6 +11,7 @@ Usage:
     python bookmark_merger.py categorize  # AI categorization (all bookmarks)
     python bookmark_merger.py generate    # Generate HTML pages
     python bookmark_merger.py export      # Export for NotebookLM
+    python bookmark_merger.py stories     # Generate AI stories for categories
     python bookmark_merger.py update      # Incremental: merge new, categorize new only
     python bookmark_merger.py all         # Run merge, consolidate, generate, export
     python bookmark_merger.py clean       # Delete generated files to re-run
@@ -19,6 +20,7 @@ Usage:
 
 import argparse
 import json
+import markdown
 import os
 import shutil
 import sys
@@ -45,6 +47,7 @@ RAW_MEDIA_DIR = RAW_DIR / "media"
 MASTER_DIR = BASE_DIR / "master"
 MASTER_JSON = MASTER_DIR / "bookmarks.json"
 MASTER_CATEGORIES = MASTER_DIR / "categories.json"
+MASTER_STORIES = MASTER_DIR / "stories.json"
 MASTER_MEDIA_DIR = MASTER_DIR / "media"
 MASTER_HTML_DIR = MASTER_DIR / "html"
 MASTER_EXPORTS_DIR = MASTER_DIR / "exports"
@@ -178,6 +181,277 @@ def get_time_periods(dt: datetime) -> dict[str, str]:
         "week": f"{iso_week.year}-W{iso_week.week:02d}",
         "day": dt.strftime("%Y-%m-%d"),
     }
+
+
+# ==================== Stories Helpers ====================
+
+def load_stories() -> dict:
+    """Load existing stories data or return empty structure"""
+    if MASTER_STORIES.exists():
+        with open(MASTER_STORIES, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"generated_at": None, "category_years": {}}
+
+
+def save_stories(stories_data: dict) -> None:
+    """Save stories data to JSON"""
+    stories_data["generated_at"] = datetime.now().isoformat()
+    with open(MASTER_STORIES, "w", encoding="utf-8") as f:
+        json.dump(stories_data, f, indent=2, ensure_ascii=False)
+
+
+def compute_tweet_hash(tweet_ids: list[str]) -> str:
+    """Compute hash of tweet IDs for change detection"""
+    import hashlib
+    sorted_ids = ",".join(sorted(tweet_ids))
+    return hashlib.md5(sorted_ids.encode()).hexdigest()[:12]
+
+
+def format_story_date(date_str: str) -> str:
+    """Format date string for story timeline display (e.g., 'March 5')"""
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        # Use %B %d and strip leading zero from day
+        return dt.strftime("%B %d").replace(" 0", " ")
+    except (ValueError, TypeError):
+        return date_str
+
+
+def get_category_year_tweets(
+    cat_id: str, year: str, bookmarks: list[dict], categories_data: dict
+) -> list[dict]:
+    """Get all tweets for a category in a specific year"""
+    cat_tweet_ids = set(categories_data.get("categories", {}).get(cat_id, {}).get("tweet_ids", []))
+    result = []
+    for bookmark in bookmarks:
+        tweet_id = bookmark.get("Tweet Id", "")
+        if tweet_id not in cat_tweet_ids:
+            continue
+        dt = parse_tweet_date(bookmark.get("Created At", ""))
+        if dt and str(dt.year) == str(year):
+            result.append(bookmark)
+    # Sort by date
+    result.sort(key=lambda x: parse_tweet_date(x.get("Created At", "")) or datetime.min.replace(tzinfo=None))
+    return result
+
+
+def should_regenerate_story(
+    stories_data: dict, cat_id: str, year: str, tweet_ids: list[str], force_year: int | None = None
+) -> bool:
+    """Check if a category/year story needs regeneration"""
+    if force_year is not None and str(force_year) == str(year):
+        return True
+
+    existing = stories_data.get("category_years", {}).get(cat_id, {}).get(str(year))
+    if not existing:
+        return True
+
+    current_hash = compute_tweet_hash(tweet_ids)
+    return existing.get("tweet_hash") != current_hash
+
+
+def get_media_refs(tweet_ids: list[str], bookmarks: list[dict]) -> list[dict]:
+    """Get media references for a list of tweet IDs"""
+    media_refs = []
+    tweet_lookup = {b["Tweet Id"]: b for b in bookmarks}
+
+    for tweet_id in tweet_ids:
+        tweet_media_dir = MASTER_MEDIA_DIR / tweet_id
+        if tweet_media_dir.exists():
+            for media_file in tweet_media_dir.iterdir():
+                if media_file.is_file():
+                    media_refs.append({
+                        "tweet_id": tweet_id,
+                        "filename": media_file.name
+                    })
+    return media_refs
+
+
+def cluster_events(client, tweets: list[dict], category_name: str, year: str) -> list[dict]:
+    """Use AI to cluster tweets into events/themes"""
+    # Format tweets for prompt
+    tweet_list = []
+    for t in tweets[:100]:  # Limit to 100 for prompt size
+        dt = parse_tweet_date(t.get("Created At", ""))
+        date_str = dt.strftime("%Y-%m-%d") if dt else "unknown"
+        text = t.get("Full Text", "")[:200]
+        tweet_list.append(f'{t["Tweet Id"]} ({date_str}): {text}')
+
+    prompt = f"""You are analyzing {len(tweets)} bookmarked tweets from the "{category_name}" category during {year}.
+
+Identify 5-15 major events, themes, or narrative threads. An "event" can be:
+- A specific news event covered by multiple tweets
+- A recurring theme or topic
+- A significant development or announcement
+
+For each event, provide:
+1. A compelling title (5-10 words)
+2. Date range (earliest to latest tweet)
+3. List of tweet IDs belonging to this event
+
+Rules:
+- Each tweet should belong to at most one event
+- Events should have at least 3 tweets
+- Order events chronologically by start date
+- Not all tweets need to be assigned
+
+Return JSON only:
+{{
+  "events": [
+    {{
+      "title": "Event Title",
+      "date_start": "YYYY-MM-DD",
+      "date_end": "YYYY-MM-DD",
+      "tweet_ids": ["id1", "id2", ...]
+    }}
+  ]
+}}
+
+TWEETS:
+{chr(10).join(tweet_list)}
+"""
+
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=4000,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    try:
+        result_text = response.content[0].text
+        if "```json" in result_text:
+            result_text = result_text.split("```json")[1].split("```")[0]
+        elif "```" in result_text:
+            result_text = result_text.split("```")[1].split("```")[0]
+        result = json.loads(result_text)
+        return result.get("events", [])
+    except (json.JSONDecodeError, IndexError) as e:
+        print(f"  Warning: Error parsing event clusters: {e}")
+        return []
+
+
+def generate_event_summary(client, event: dict, tweets: list[dict], category_name: str) -> str:
+    """Generate AI summary for a single event"""
+    tweet_texts = []
+    for t in tweets[:10]:  # Limit tweets in prompt
+        text = t.get("Full Text", "")[:300]
+        tweet_texts.append(f"- {text}")
+
+    prompt = f"""Write a summary for an event from someone's Twitter bookmarks.
+
+Event Title: "{event['title']}"
+Category: {category_name}
+Time Period: {event.get('date_start', 'unknown')} to {event.get('date_end', 'unknown')}
+Number of Bookmarks: {len(tweets)}
+
+Tweets:
+{chr(10).join(tweet_texts)}
+
+Write a 2-4 sentence summary that:
+- Captures why these tweets were bookmarked together
+- Highlights notable insights or developments
+- Uses engaging, narrative language
+
+Return only the summary text."""
+
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=500,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return response.content[0].text.strip()
+
+
+def generate_year_summary(client, events: list[dict], tweets: list[dict], category_name: str, year: str) -> str:
+    """Generate compelling narrative summary for a category/year"""
+    # Build events overview
+    events_overview = []
+    for evt in events:
+        events_overview.append(f"- {evt['title']} ({evt.get('date_start', '')} to {evt.get('date_end', '')}): {evt.get('summary', '')[:100]}...")
+
+    prompt = f"""Write the opening narrative for a "story" page chronicling someone's Twitter bookmarks in "{category_name}" during {year}.
+
+They bookmarked {len(tweets)} tweets in this category during {year}.
+
+Major events/themes identified:
+{chr(10).join(events_overview)}
+
+Write a compelling narrative (300-400 words) that:
+- Opens with a hook capturing the year's significance
+- Weaves the major themes into a coherent story
+- Highlights patterns or evolution across the year
+- Uses vivid, engaging prose
+- Ends with a reflective note
+
+Return only the narrative text."""
+
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=1000,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    return response.content[0].text.strip()
+
+
+def generate_story(client, stories_data: dict, cat_id: str, year: str,
+                   bookmarks: list[dict], categories_data: dict) -> None:
+    """Generate complete story for a category/year"""
+    cat_name = categories_data.get("categories", {}).get(cat_id, {}).get("name", cat_id)
+
+    # Get tweets for this category/year
+    tweets = get_category_year_tweets(cat_id, year, bookmarks, categories_data)
+    if not tweets:
+        print(f"  No tweets found for {cat_id}/{year}")
+        return
+
+    print(f"  Clustering {len(tweets)} tweets into events...")
+    events_raw = cluster_events(client, tweets, cat_name, year)
+    print(f"  Found {len(events_raw)} events")
+
+    # Build tweet lookup for this set
+    tweet_lookup = {t["Tweet Id"]: t for t in tweets}
+
+    # Generate summaries for each event
+    events = []
+    for i, evt_raw in enumerate(events_raw, 1):
+        print(f"  Generating summary for event {i}/{len(events_raw)}: {evt_raw.get('title', 'Untitled')[:40]}...")
+        evt_tweets = [tweet_lookup[tid] for tid in evt_raw.get("tweet_ids", []) if tid in tweet_lookup]
+
+        if len(evt_tweets) < 3:
+            continue
+
+        summary = generate_event_summary(client, evt_raw, evt_tweets, cat_name)
+
+        events.append({
+            "id": f"evt-{len(events)+1:03d}",
+            "title": evt_raw.get("title", "Untitled Event"),
+            "summary": summary,
+            "date_start": evt_raw.get("date_start", ""),
+            "date_end": evt_raw.get("date_end", ""),
+            "tweet_ids": evt_raw.get("tweet_ids", []),
+            "media_refs": get_media_refs(evt_raw.get("tweet_ids", []), bookmarks),
+            "tweet_count": len(evt_tweets)
+        })
+
+    # Generate year summary
+    print(f"  Generating year summary...")
+    year_summary = generate_year_summary(client, events, tweets, cat_name, year)
+
+    # Store in stories_data
+    if cat_id not in stories_data["category_years"]:
+        stories_data["category_years"][cat_id] = {}
+
+    stories_data["category_years"][cat_id][year] = {
+        "generated_at": datetime.now().isoformat(),
+        "tweet_count": len(tweets),
+        "tweet_hash": compute_tweet_hash([t["Tweet Id"] for t in tweets]),
+        "summary": year_summary,
+        "events": events
+    }
+
+    print(f"  Story complete: {len(events)} events, {len(tweets)} tweets")
 
 
 def cmd_categorize(args: argparse.Namespace) -> None:
@@ -505,6 +779,11 @@ HTML_BASE = """<!DOCTYPE html>
         .search-container {{
             position: relative;
         }}
+        .search-results {{
+            color: var(--secondary);
+            font-size: 0.9em;
+            margin-bottom: 15px;
+        }}
         .search-suggestions {{
             position: absolute;
             top: 100%;
@@ -585,6 +864,171 @@ HTML_BASE = """<!DOCTYPE html>
             color: white;
             border-color: var(--link);
         }}
+        /* Story styles */
+        .summary-narrative {{
+            font-size: 1.05em;
+            line-height: 1.7;
+            margin-bottom: 30px;
+            padding: 20px;
+            background: var(--card-bg);
+            border-radius: 12px;
+        }}
+        .story-timeline {{
+            position: relative;
+            padding: 20px 0;
+            margin: 30px 0;
+        }}
+        .timeline-line {{
+            position: absolute;
+            left: 20px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background: var(--border);
+        }}
+        .timeline-event {{
+            position: relative;
+            margin-left: 50px;
+            margin-bottom: 20px;
+        }}
+        .event-dot {{
+            position: absolute;
+            left: -38px;
+            top: 15px;
+            width: 14px;
+            height: 14px;
+            border-radius: 50%;
+            background: var(--link);
+            border: 3px solid var(--bg);
+        }}
+        .event-card {{
+            background: var(--card-bg);
+            border-radius: 12px;
+            overflow: hidden;
+        }}
+        .event-header {{
+            padding: 15px;
+            cursor: pointer;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: baseline;
+            gap: 10px;
+        }}
+        .event-header:hover {{
+            background: rgba(29, 155, 240, 0.1);
+        }}
+        .event-date {{
+            color: var(--secondary);
+            font-size: 0.85em;
+            min-width: 120px;
+        }}
+        .event-title {{
+            flex: 1;
+            margin: 0;
+            font-size: 1.1em;
+        }}
+        .event-count {{
+            color: var(--secondary);
+            font-size: 0.85em;
+        }}
+        .event-content {{
+            display: none;
+            padding: 0 15px 15px;
+            border-top: 1px solid var(--border);
+        }}
+        .event-card.expanded .event-content {{
+            display: block;
+        }}
+        .event-summary {{
+            margin-bottom: 15px;
+        }}
+        .event-media {{
+            display: flex;
+            gap: 10px;
+            overflow-x: auto;
+            padding: 10px 0;
+        }}
+        .event-media img, .event-media video {{
+            height: 100px;
+            border-radius: 8px;
+            flex-shrink: 0;
+        }}
+        .event-tweets-link {{
+            display: inline-block;
+            margin-top: 10px;
+        }}
+        .stories-toc {{
+            display: grid;
+            gap: 20px;
+        }}
+        .category-section {{
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 15px 20px;
+        }}
+        .category-section h3 {{
+            margin: 0 0 10px;
+        }}
+        .year-links {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }}
+        .year-links a {{
+            padding: 5px 12px;
+            background: var(--bg);
+            border-radius: 20px;
+            font-size: 0.9em;
+        }}
+        /* Collapsible bookmark sections */
+        .bookmark-section {{
+            margin-bottom: 10px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            overflow: hidden;
+        }}
+        .section-header {{
+            position: sticky;
+            top: 0;
+            background: var(--card-bg);
+            padding: 12px 15px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            z-index: 10;
+            border-bottom: 1px solid var(--border);
+        }}
+        .section-header:hover {{
+            background: rgba(29, 155, 240, 0.1);
+        }}
+        .section-toggle {{
+            transition: transform 0.2s;
+            font-size: 0.8em;
+        }}
+        .bookmark-section:not(.collapsed) .section-toggle {{
+            transform: rotate(90deg);
+        }}
+        .section-title {{
+            font-weight: 600;
+            flex: 1;
+        }}
+        .section-count {{
+            color: var(--secondary);
+            font-size: 0.9em;
+        }}
+        .section-content {{
+            display: none;
+        }}
+        .bookmark-section:not(.collapsed) .section-content {{
+            display: block;
+        }}
+        .bookmark-section:not(.collapsed) .section-header {{
+            border-bottom: 1px solid var(--border);
+        }}
+        .bookmark-section.collapsed .section-header {{
+            border-bottom: none;
+        }}
         .hidden {{ display: none; }}
     </style>
 </head>
@@ -593,8 +1037,37 @@ HTML_BASE = """<!DOCTYPE html>
         <a href="../index.html">Chronological</a>
         <a href="../categories/index.html">Categories</a>
         <a href="../timeline/index.html">Timeline</a>
+        <a href="../stories/index.html">Stories</a>
     </nav>
     {content}
+    <script>
+    // Toggle collapsible bookmark sections
+    function toggleSection(header) {{
+        const section = header.closest('.bookmark-section');
+        section.classList.toggle('collapsed');
+    }}
+
+    // Open a specific section and scroll to it
+    function openSection(eventId) {{
+        const section = document.getElementById('section-' + eventId);
+        if (section) {{
+            section.classList.remove('collapsed');
+            setTimeout(() => section.scrollIntoView({{behavior: 'smooth', block: 'start'}}), 100);
+        }}
+    }}
+
+    // Handle hash navigation on page load
+    document.addEventListener('DOMContentLoaded', function() {{
+        if (window.location.hash && window.location.hash.startsWith('#section-')) {{
+            const sectionId = window.location.hash.substring(1);
+            const section = document.getElementById(sectionId);
+            if (section) {{
+                section.classList.remove('collapsed');
+                setTimeout(() => section.scrollIntoView({{behavior: 'smooth', block: 'start'}}), 100);
+            }}
+        }}
+    }});
+    </script>
 </body>
 </html>
 """
@@ -802,9 +1275,9 @@ def build_search_index(bookmarks: list[dict], show_progress: bool = True) -> dic
                 profiles_index[mention_lower].append(tweet_id)
                 profile_counts[mention_lower] += 1
 
-    # Get top words and profiles for suggestions (sorted by frequency)
-    top_words = sorted(word_counts.keys(), key=lambda w: word_counts[w], reverse=True)[:500]
-    top_profiles = sorted(profile_counts.keys(), key=lambda p: profile_counts[p], reverse=True)[:200]
+    # Get all words and profiles for suggestions (sorted by frequency)
+    top_words = sorted(word_counts.keys(), key=lambda w: word_counts[w], reverse=True)
+    top_profiles = sorted(profile_counts.keys(), key=lambda p: profile_counts[p], reverse=True)
 
     # Only keep words that appear in multiple tweets for the index
     filtered_words = {w: ids for w, ids in words_index.items() if len(ids) >= 2}
@@ -817,10 +1290,214 @@ def build_search_index(bookmarks: list[dict], show_progress: bool = True) -> dic
         "profiles": dict(profiles_index),
         "tweets": tweets_meta,
         "suggestions": {
-            "words": [w for w in top_words if w in filtered_words][:200],
+            "words": [w for w in top_words if w in filtered_words],
             "profiles": [f"@{p}" for p in top_profiles]
         }
     }
+
+
+# ==================== Story HTML Generation ====================
+
+def generate_stories_index(stories_data: dict, categories_data: dict) -> None:
+    """Generate the stories index page (table of contents)"""
+    stories_dir = MASTER_HTML_DIR / "stories"
+    stories_dir.mkdir(parents=True, exist_ok=True)
+
+    categories = categories_data.get("categories", {})
+    category_years = stories_data.get("category_years", {})
+
+    # Build TOC content
+    toc_html = '<div class="stories-toc">\n'
+
+    # Sort categories by number of stories
+    sorted_cats = sorted(
+        category_years.items(),
+        key=lambda x: len(x[1]),
+        reverse=True
+    )
+
+    for cat_id, years in sorted_cats:
+        cat_name = categories.get(cat_id, {}).get("name", cat_id)
+        sorted_years = sorted(years.keys(), reverse=True)
+
+        year_links = []
+        for year in sorted_years:
+            tweet_count = years[year].get("tweet_count", 0)
+            year_links.append(f'<a href="{cat_id}/{year}.html">{year} ({tweet_count} bookmarks)</a>')
+
+        toc_html += f'''
+<div class="category-section">
+    <h3><a href="../categories/{cat_id}.html">{cat_name}</a></h3>
+    <div class="year-links">
+        {chr(10).join(year_links)}
+    </div>
+</div>
+'''
+
+    toc_html += '</div>'
+
+    content = f'''
+<h1>Stories</h1>
+<p class="meta">AI-generated narratives of your bookmarks by category and year</p>
+{toc_html}
+'''
+
+    page_html = HTML_BASE.format(title="Stories", content=content)
+    page_html = page_html.replace('../stories/', '')
+
+    with open(stories_dir / "index.html", "w", encoding="utf-8") as f:
+        f.write(page_html)
+
+
+def generate_story_page(cat_id: str, year: str, story: dict,
+                        bookmarks: list[dict], categories_data: dict) -> None:
+    """Generate a single story page with timeline"""
+    stories_dir = MASTER_HTML_DIR / "stories" / cat_id
+    stories_dir.mkdir(parents=True, exist_ok=True)
+
+    cat_name = categories_data.get("categories", {}).get(cat_id, {}).get("name", cat_id)
+    tweet_lookup = {b["Tweet Id"]: b for b in bookmarks}
+
+    # Build timeline HTML
+    timeline_html = '<div class="story-timeline">\n<div class="timeline-line"></div>\n'
+
+    events = story.get("events", [])
+    for evt in events:
+        # Format date range (e.g., "March 13 → April 4")
+        date_start = evt.get("date_start", "")
+        date_end = evt.get("date_end", "")
+        if date_start == date_end:
+            date_display = format_story_date(date_start)
+        else:
+            date_display = f"{format_story_date(date_start)} → {format_story_date(date_end)}"
+
+        # Build media preview
+        media_html = ""
+        media_refs = evt.get("media_refs", [])[:4]  # Limit to 4 media items
+        if media_refs:
+            media_items = []
+            for ref in media_refs:
+                media_path = f"../../media/{ref['tweet_id']}/{ref['filename']}"
+                if ref['filename'].lower().endswith(('.mp4', '.webm', '.mov')):
+                    media_items.append(f'<video src="{media_path}" preload="metadata"></video>')
+                else:
+                    media_items.append(f'<img src="{media_path}" loading="lazy">')
+            media_html = f'<div class="event-media">{chr(10).join(media_items)}</div>'
+
+        timeline_html += f'''
+<div class="timeline-event" data-event-id="{evt['id']}">
+    <div class="event-dot"></div>
+    <div class="event-card">
+        <div class="event-header" onclick="this.parentElement.classList.toggle('expanded')">
+            <span class="event-date">{date_display}</span>
+            <h3 class="event-title">{evt.get('title', 'Untitled')}</h3>
+            <span class="event-count">{evt.get('tweet_count', 0)} bookmarks</span>
+        </div>
+        <div class="event-content">
+            <p class="event-summary">{evt.get('summary', '')}</p>
+            {media_html}
+            <a href="#section-{evt['id']}" class="event-tweets-link" onclick="openSection('{evt['id']}')">View tweets below</a>
+        </div>
+    </div>
+</div>
+'''
+
+    timeline_html += '</div>'
+
+    # Build tweets section grouped by event (collapsible sections)
+    tweets_html = ""
+    all_event_tweet_ids = set()
+
+    for evt in events:
+        evt_tweet_ids = evt.get("tweet_ids", [])
+        all_event_tweet_ids.update(evt_tweet_ids)
+
+        section_content = ""
+        for tid in evt_tweet_ids:
+            if tid in tweet_lookup:
+                section_content += render_tweet_card(tweet_lookup[tid], categories_data)
+
+        evt_count = len(evt_tweet_ids)
+        tweets_html += f'''<div class="bookmark-section collapsed" id="section-{evt["id"]}">
+    <div class="section-header" onclick="toggleSection(this)">
+        <span class="section-toggle">▶</span>
+        <span class="section-title">{evt.get("title", "Untitled")}</span>
+        <span class="section-count">({evt_count} bookmarks)</span>
+    </div>
+    <div class="section-content">
+{section_content}
+    </div>
+</div>
+'''
+
+    # Add uncategorized tweets
+    cat_tweet_ids = set(categories_data.get("categories", {}).get(cat_id, {}).get("tweet_ids", []))
+    uncategorized = []
+    for bookmark in bookmarks:
+        tid = bookmark.get("Tweet Id", "")
+        if tid in cat_tweet_ids and tid not in all_event_tweet_ids:
+            dt = parse_tweet_date(bookmark.get("Created At", ""))
+            if dt and str(dt.year) == str(year):
+                uncategorized.append(bookmark)
+
+    if uncategorized:
+        section_content = ""
+        for bookmark in uncategorized:
+            section_content += render_tweet_card(bookmark, categories_data)
+
+        tweets_html += f'''<div class="bookmark-section collapsed" id="section-other">
+    <div class="section-header" onclick="toggleSection(this)">
+        <span class="section-toggle">▶</span>
+        <span class="section-title">Other Bookmarks</span>
+        <span class="section-count">({len(uncategorized)} bookmarks)</span>
+    </div>
+    <div class="section-content">
+{section_content}
+    </div>
+</div>
+'''
+
+    # Assemble page
+    content = f'''
+<h1>{cat_name} - {year}</h1>
+<p class="meta">{story.get('tweet_count', 0)} bookmarks | Generated {story.get('generated_at', '')[:10]}</p>
+
+<div class="summary-narrative">
+{markdown.markdown(story.get('summary', ''))}
+</div>
+
+<h2>Timeline of Events</h2>
+{timeline_html}
+
+<h2>All Bookmarks</h2>
+{tweets_html}
+'''
+
+    page_html = HTML_BASE.format(title=f"{cat_name} - {year}", content=content)
+    # Fix paths for stories/cat/year.html depth
+    page_html = page_html.replace('../index.html', '../../index.html')
+    page_html = page_html.replace('../categories/', '../../categories/')
+    page_html = page_html.replace('../timeline/', '../../timeline/')
+    page_html = page_html.replace('../stories/', '../../stories/')
+    page_html = page_html.replace('../tweets/', '../../tweets/')
+    page_html = page_html.replace('../../media/', '../../../media/')
+
+    with open(stories_dir / f"{year}.html", "w", encoding="utf-8") as f:
+        f.write(page_html)
+
+
+def generate_story_pages(bookmarks: list[dict], categories_data: dict, stories_data: dict) -> None:
+    """Generate all story HTML pages"""
+    if not stories_data.get("category_years"):
+        return
+
+    # Generate index
+    generate_stories_index(stories_data, categories_data)
+
+    # Generate individual story pages
+    for cat_id, years in stories_data.get("category_years", {}).items():
+        for year, story in years.items():
+            generate_story_page(cat_id, year, story, bookmarks, categories_data)
 
 
 def cmd_generate(args: argparse.Namespace) -> None:
@@ -890,6 +1567,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
     <input type="text" id="search-input" class="search-box" placeholder="Search tweets... (type @ for profiles)" autocomplete="off">
     <div id="search-suggestions" class="search-suggestions hidden"></div>
 </div>
+<div id="search-results" class="search-results hidden"></div>
 <div id="tweets-container">
 {tweets_html}
 </div>
@@ -938,6 +1616,8 @@ function filterTweets(query) {{
     query = query.toLowerCase();
     const isProfile = query.startsWith('@');
     const searchTerm = isProfile ? query.slice(1) : query;
+    const resultsDiv = document.getElementById('search-results');
+    let matchCount = 0;
 
     document.querySelectorAll('.tweet-card').forEach(card => {{
         const text = card.dataset.text || '';
@@ -949,7 +1629,15 @@ function filterTweets(query) {{
             show = text.includes(searchTerm);
         }}
         card.classList.toggle('hidden', !show);
+        if (show) matchCount++;
     }});
+
+    if (query) {{
+        resultsDiv.textContent = `${{matchCount}} bookmark${{matchCount !== 1 ? 's' : ''}} found`;
+        resultsDiv.classList.remove('hidden');
+    }} else {{
+        resultsDiv.classList.add('hidden');
+    }}
 }}
 
 searchInput.addEventListener('input', (e) => {{
@@ -1030,13 +1718,21 @@ document.addEventListener('click', (e) => {{
 </div>
 """
 
+        # Build stories availability map for JavaScript
+        stories_available = {}
+        if MASTER_STORIES.exists():
+            stories_data = load_stories()
+            for cat, years in stories_data.get("category_years", {}).items():
+                stories_available[cat] = list(years.keys())
+
         # Add JavaScript for timeline expand/collapse
-        timeline_js = """
+        timeline_js = f"""
 <script>
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const STORIES_AVAILABLE = {json.dumps(stories_available)};
 
-document.querySelectorAll('.year-link').forEach(link => {
-    link.addEventListener('click', function() {
+document.querySelectorAll('.year-link').forEach(link => {{
+    link.addEventListener('click', function() {{
         const card = this.closest('.category-card');
         const nav = this.closest('.timeline-nav');
         const timeline = JSON.parse(nav.dataset.timeline);
@@ -1048,25 +1744,31 @@ document.querySelectorAll('.year-link').forEach(link => {
         const wasActive = this.classList.contains('active');
         nav.querySelectorAll('.year-link').forEach(l => l.classList.remove('active'));
 
-        if (wasActive) {
+        if (wasActive) {{
             monthRow.classList.add('hidden');
             monthRow.innerHTML = '';
-        } else {
+        }} else {{
             this.classList.add('active');
-            const months = timeline[year] || {};
+            const months = timeline[year] || {{}};
             const monthLinks = [];
-            for (let m = 1; m <= 12; m++) {
+
+            // Add story link if available
+            if (STORIES_AVAILABLE[cat] && STORIES_AVAILABLE[cat].includes(year)) {{
+                monthLinks.push(`<a href="../stories/${{cat}}/${{year}}.html" class="month-link" style="background: var(--link); color: white;">View ${{year}} Story</a>`);
+            }}
+
+            for (let m = 1; m <= 12; m++) {{
                 const mm = m.toString().padStart(2, '0');
                 const count = months[mm] || 0;
-                if (count > 0) {
-                    monthLinks.push(`<a href="${cat}.html?year=${year}&month=${mm}" class="month-link">${MONTH_NAMES[m-1]} (${count})</a>`);
-                }
-            }
+                if (count > 0) {{
+                    monthLinks.push(`<a href="${{cat}}.html?year=${{year}}&month=${{mm}}" class="month-link">${{MONTH_NAMES[m-1]}} (${{count}})</a>`);
+                }}
+            }}
             monthRow.innerHTML = monthLinks.join('');
             monthRow.classList.remove('hidden');
-        }
-    });
-});
+        }}
+    }});
+}});
 </script>
 """
         cat_index_content += timeline_js
@@ -1282,6 +1984,12 @@ if (filterYear) {{
 
             with open(month_dir / "index.html", "w", encoding="utf-8") as f:
                 f.write(month_html)
+
+    # Generate story pages if stories.json exists
+    if MASTER_STORIES.exists():
+        print("Generating story pages...")
+        stories_data = load_stories()
+        generate_story_pages(bookmarks, categories_data, stories_data)
 
     print(f"\nGenerated HTML pages in {MASTER_HTML_DIR}")
     print(f"Open {MASTER_HTML_DIR / 'index.html'} in a browser to view")
@@ -1631,6 +2339,104 @@ Tweets:
     print("\n=== Update complete ===")
 
 
+def cmd_stories(args: argparse.Namespace) -> None:
+    """Generate AI stories for category/year combinations"""
+
+    # Handle --list-categories
+    if getattr(args, 'list_categories', False):
+        if not MASTER_CATEGORIES.exists():
+            print("Categories not found. Run 'categorize' first.")
+            return
+        with open(MASTER_CATEGORIES, "r", encoding="utf-8") as f:
+            categories_data = json.load(f)
+        print("Available categories:\n")
+        for cat_id, cat_info in sorted(categories_data.get("categories", {}).items()):
+            tweet_count = len(cat_info.get("tweet_ids", []))
+            print(f"  {cat_id}")
+            print(f"    Name: {cat_info.get('name', cat_id)}")
+            print(f"    Tweets: {tweet_count}\n")
+        return
+
+    print("=== Generating Stories ===")
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if not api_key:
+        print("Error: ANTHROPIC_API_KEY environment variable not set")
+        return
+
+    if not MASTER_JSON.exists():
+        print("Master JSON not found. Run 'merge' first.")
+        return
+
+    if not MASTER_CATEGORIES.exists():
+        print("Categories not found. Run 'categorize' first.")
+        return
+
+    # Load data
+    with open(MASTER_JSON, "r", encoding="utf-8") as f:
+        bookmarks = json.load(f)
+
+    with open(MASTER_CATEGORIES, "r", encoding="utf-8") as f:
+        categories_data = json.load(f)
+
+    stories_data = load_stories()
+
+    print(f"Loaded {len(bookmarks)} bookmarks, {len(categories_data.get('categories', {}))} categories")
+
+    try:
+        import anthropic
+    except ImportError:
+        print("Error: anthropic package not installed")
+        return
+
+    client = anthropic.Anthropic(api_key=api_key)
+
+    # Build category timeline to find category/year combinations
+    category_timeline = build_category_timeline(bookmarks, categories_data)
+
+    # Determine which category/years need generation
+    to_generate = []
+    min_tweets = getattr(args, 'min_tweets', 10)
+    force_year = getattr(args, 'force_year', None)
+    target_category = getattr(args, 'category', None)
+
+    for cat_id, years in category_timeline.items():
+        if target_category and cat_id != target_category:
+            continue
+
+        for year, months in years.items():
+            tweet_count = sum(months.values())
+            if tweet_count < min_tweets:
+                continue
+
+            # Get tweet IDs for this category/year
+            tweets = get_category_year_tweets(cat_id, year, bookmarks, categories_data)
+            tweet_ids = [t["Tweet Id"] for t in tweets]
+
+            if should_regenerate_story(stories_data, cat_id, year, tweet_ids, force_year):
+                to_generate.append((cat_id, year, tweet_count))
+
+    if not to_generate:
+        print("No stories need regeneration.")
+        return
+
+    print(f"\nWill generate {len(to_generate)} stories:")
+    for cat_id, year, count in to_generate:
+        cat_name = categories_data.get("categories", {}).get(cat_id, {}).get("name", cat_id)
+        print(f"  - {cat_name} / {year} ({count} tweets)")
+
+    # Generate each story
+    for i, (cat_id, year, tweet_count) in enumerate(to_generate, 1):
+        cat_name = categories_data.get("categories", {}).get(cat_id, {}).get("name", cat_id)
+        print(f"\n[{i}/{len(to_generate)}] Generating story: {cat_name} / {year}")
+        generate_story(client, stories_data, cat_id, year, bookmarks, categories_data)
+
+    # Save stories data
+    save_stories(stories_data)
+    print(f"\nStories saved to {MASTER_STORIES}")
+    print("Run 'generate' to create HTML pages.")
+
+
 def cmd_all(args: argparse.Namespace) -> None:
     """Run merge, consolidate, generate, and export"""
     cmd_merge(args)
@@ -1661,6 +2467,13 @@ def main():
     subparsers.add_parser("cleanup-raw", help="Delete raw exports (DESTRUCTIVE)")
     subparsers.add_parser("all", help="Run merge, consolidate, generate, export")
 
+    # Stories command with options
+    stories_parser = subparsers.add_parser("stories", help="Generate AI stories for categories")
+    stories_parser.add_argument("--list-categories", action="store_true", help="List available categories and exit")
+    stories_parser.add_argument("--force-year", type=int, help="Force regenerate specific year")
+    stories_parser.add_argument("--min-tweets", type=int, default=10, help="Minimum tweets for story (default: 10)")
+    stories_parser.add_argument("--category", type=str, help="Generate for specific category only")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -1677,6 +2490,7 @@ def main():
         "clean": cmd_clean,
         "cleanup-raw": cmd_cleanup_raw,
         "all": cmd_all,
+        "stories": cmd_stories,
     }
 
     commands[args.command](args)
