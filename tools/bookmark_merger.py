@@ -1751,6 +1751,7 @@ document.addEventListener('click', (e) => {{
     index_html = index_html.replace('../index.html', 'index.html')
     index_html = index_html.replace('../categories/', 'categories/')
     index_html = index_html.replace('../timeline/', 'timeline/')
+    index_html = index_html.replace('../../media/', '../media/')  # Fix for root-level page
 
     with open(MASTER_HTML_DIR / "index.html", "w", encoding="utf-8") as f:
         f.write(index_html)
