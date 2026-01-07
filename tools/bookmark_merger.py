@@ -3269,6 +3269,11 @@ def add_newgen_link(html: str) -> str:
         '<a href="/stories/index.html">Stories</a>',
         '<a href="/stories/index.html">Stories</a>\n        <a href="/new-gen/">New-Gen</a>'
     )
+    # Handle stories pages where Stories link is self-referential
+    html = html.replace(
+        '<a href="index.html">Stories</a>',
+        '<a href="index.html">Stories</a>\n        <a href="/new-gen/">New-Gen</a>'
+    )
     return html
 
 
