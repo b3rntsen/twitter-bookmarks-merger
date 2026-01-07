@@ -25,6 +25,7 @@ import json
 import markdown
 import os
 import shutil
+import subprocess
 import sys
 from collections import defaultdict
 from datetime import datetime
@@ -164,6 +165,66 @@ def cmd_consolidate(args: argparse.Namespace) -> None:
                 total_files += 1
 
     print(f"Copied {total_files} media files to {MASTER_MEDIA_DIR}")
+
+    # Generate video thumbnails
+    print("\nGenerating video thumbnails...")
+    thumb_count = generate_video_thumbnails(MASTER_MEDIA_DIR)
+    if thumb_count > 0:
+        print(f"  Generated {thumb_count} new thumbnails")
+    else:
+        print("  No new thumbnails needed")
+
+
+def generate_video_thumbnails(media_dir: Path) -> int:
+    """Generate thumbnails for all videos in media directory using ffmpeg.
+
+    Creates thumb_{video_stem}.jpg next to each video file.
+    Skips if thumbnail already exists. Requires ffmpeg to be installed.
+    """
+    VIDEO_EXTENSIONS = [".mp4", ".webm", ".mov"]
+    count = 0
+    errors = 0
+
+    for tweet_dir in media_dir.iterdir():
+        if not tweet_dir.is_dir():
+            continue
+
+        for video_file in tweet_dir.iterdir():
+            if video_file.suffix.lower() not in VIDEO_EXTENSIONS:
+                continue
+
+            thumb_path = tweet_dir / f"thumb_{video_file.stem}.jpg"
+            if thumb_path.exists():
+                continue  # Already generated
+
+            try:
+                result = subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-i", str(video_file),
+                        "-ss", "00:00:01",  # 1 second into video
+                        "-vframes", "1",     # Single frame
+                        "-q:v", "2",         # Quality (2 = high)
+                        str(thumb_path),
+                        "-y",                # Overwrite if exists
+                        "-loglevel", "error" # Suppress output
+                    ],
+                    capture_output=True,
+                    check=True
+                )
+                count += 1
+            except FileNotFoundError:
+                # ffmpeg not installed - warn once and continue
+                if errors == 0:
+                    print("  Warning: ffmpeg not found. Install with: brew install ffmpeg")
+                errors += 1
+            except subprocess.CalledProcessError as e:
+                # ffmpeg failed for this video
+                if errors < 5:
+                    print(f"  Warning: Could not generate thumbnail for {video_file.name}")
+                errors += 1
+
+    return count
 
 
 def parse_tweet_date(date_str: str) -> datetime | None:
@@ -814,6 +875,18 @@ HTML_BASE = """<!DOCTYPE html>
             font-size: 0.9em;
             margin-bottom: 15px;
         }}
+        .loading-indicator {{
+            text-align: center;
+            padding: 20px;
+            color: var(--secondary);
+        }}
+        .loading-indicator.done {{
+            color: var(--secondary);
+            font-size: 0.9em;
+        }}
+        #scroll-sentinel {{
+            height: 1px;
+        }}
         .search-suggestions {{
             position: absolute;
             top: 100%;
@@ -1142,11 +1215,21 @@ def render_media_html(tweet_id: str, media_dir: Path) -> str:
 
     html_parts = ['<div class="tweet-media">']
     for media_file in media_files:
+        # Skip thumbnail files
+        if media_file.name.startswith("thumb_"):
+            continue
+
         rel_path = f"../../media/{tweet_id}/{media_file.name}"
         if media_file.suffix.lower() in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
             html_parts.append(f'<img src="{rel_path}" alt="Tweet media" loading="lazy">')
         elif media_file.suffix.lower() in [".mp4", ".webm", ".mov"]:
-            html_parts.append(f'<video src="{rel_path}" controls preload="metadata"></video>')
+            # Check for thumbnail
+            thumb_path = tweet_media_dir / f"thumb_{media_file.stem}.jpg"
+            if thumb_path.exists():
+                poster_rel = f"../../media/{tweet_id}/thumb_{media_file.stem}.jpg"
+                html_parts.append(f'<video src="{rel_path}" poster="{poster_rel}" controls preload="none"></video>')
+            else:
+                html_parts.append(f'<video src="{rel_path}" controls preload="metadata"></video>')
     html_parts.append('</div>')
 
     return "\n".join(html_parts) if len(html_parts) > 2 else ""
@@ -1166,12 +1249,22 @@ def render_media_html_server(tweet_id: str, media_dir: Path) -> str:
 
     html_parts = ['<div class="tweet-media">']
     for media_file in media_files:
+        # Skip thumbnail files
+        if media_file.name.startswith("thumb_"):
+            continue
+
         # Absolute path for server - nginx serves /media/bookmarks/ from /app/bookmarks-media/
         abs_path = f"/media/bookmarks/{tweet_id}/{media_file.name}"
         if media_file.suffix.lower() in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
             html_parts.append(f'<img src="{abs_path}" alt="Tweet media" loading="lazy">')
         elif media_file.suffix.lower() in [".mp4", ".webm", ".mov"]:
-            html_parts.append(f'<video src="{abs_path}" controls preload="metadata"></video>')
+            # Check for thumbnail
+            thumb_path = tweet_media_dir / f"thumb_{media_file.stem}.jpg"
+            if thumb_path.exists():
+                poster_abs = f"/media/bookmarks/{tweet_id}/thumb_{media_file.stem}.jpg"
+                html_parts.append(f'<video src="{abs_path}" poster="{poster_abs}" controls preload="none"></video>')
+            else:
+                html_parts.append(f'<video src="{abs_path}" controls preload="metadata"></video>')
     html_parts.append('</div>')
 
     return "\n".join(html_parts) if len(html_parts) > 2 else ""
@@ -1210,6 +1303,104 @@ def render_media_html_cdn(bookmark: dict) -> str:
     html_parts.append('</div>')
 
     return "\n".join(html_parts) if len(html_parts) > 2 else ""
+
+
+def generate_tweets_json(bookmarks: list[dict], categories_data: dict | None,
+                         media_mode: str = "local") -> list[dict]:
+    """Generate JSON data for tweets, suitable for infinite scroll.
+
+    media_mode: "local" (relative paths), "server" (absolute /media/bookmarks/), "cdn" (Twitter CDN)
+    """
+    tweets_data = []
+
+    for bookmark in bookmarks:
+        tweet_id = bookmark.get("Tweet Id", "")
+        if not tweet_id:
+            continue
+
+        # Parse date
+        date_str = bookmark.get("Created At", "")
+        date_iso = ""
+        date_display = date_str
+        try:
+            dt = datetime.strptime(date_str, "%a %b %d %H:%M:%S %z %Y")
+            date_iso = dt.isoformat()
+            date_display = dt.strftime("%b %d, %Y at %H:%M")
+        except ValueError:
+            pass
+
+        # Get categories for this tweet
+        categories = []
+        if categories_data:
+            tweet_cats = categories_data.get("tweet_categories", {}).get(tweet_id, [])
+            for cat_id in tweet_cats:
+                cat_name = categories_data.get("categories", {}).get(cat_id, {}).get("name", cat_id)
+                categories.append({"id": cat_id, "name": cat_name})
+
+        # Get media files
+        media = []
+        tweet_media_dir = MASTER_MEDIA_DIR / tweet_id
+        if tweet_media_dir.exists():
+            for media_file in tweet_media_dir.iterdir():
+                # Skip thumbnail files
+                if media_file.name.startswith("thumb_"):
+                    continue
+
+                # Determine path based on mode
+                if media_mode == "server":
+                    src = f"/media/bookmarks/{tweet_id}/{media_file.name}"
+                    poster_base = f"/media/bookmarks/{tweet_id}"
+                elif media_mode == "cdn":
+                    # For CDN, use Twitter URLs from bookmark data
+                    src = None  # Will handle separately
+                    poster_base = None
+                else:  # local
+                    src = f"media/{tweet_id}/{media_file.name}"
+                    poster_base = f"media/{tweet_id}"
+
+                if src:
+                    if media_file.suffix.lower() in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
+                        media.append({"type": "image", "src": src})
+                    elif media_file.suffix.lower() in [".mp4", ".webm", ".mov"]:
+                        # Check for thumbnail
+                        thumb_name = f"thumb_{media_file.stem}.jpg"
+                        thumb_path = tweet_media_dir / thumb_name
+                        poster = f"{poster_base}/{thumb_name}" if thumb_path.exists() else None
+                        media.append({"type": "video", "src": src, "poster": poster})
+
+        # For CDN mode, use Twitter URLs
+        if media_mode == "cdn":
+            media_urls = bookmark.get("Media URLs", "")
+            media_types = bookmark.get("Media Types", "")
+            if media_urls:
+                urls = [u.strip() for u in media_urls.split(",") if u.strip()]
+                types = [t.strip() for t in media_types.split(",")] if media_types else []
+                media = []
+                for i, url in enumerate(urls):
+                    media_type = types[i] if i < len(types) else ""
+                    if media_type == "video" or any(ext in url.lower() for ext in ['.mp4', '.webm', '.mov']):
+                        media.append({"type": "video", "src": url, "tweet_url": bookmark.get("Tweet URL", "")})
+                    else:
+                        media.append({"type": "image", "src": url})
+
+        tweet_data = {
+            "id": tweet_id,
+            "author": f"@{bookmark.get('User Screen Name', 'unknown')}",
+            "author_name": bookmark.get("User Name", "Unknown"),
+            "avatar": bookmark.get("User Avatar Url", ""),
+            "text": bookmark.get("Full Text", ""),
+            "date": date_iso,
+            "date_display": date_display,
+            "media": media,
+            "categories": categories,
+            "likes": bookmark.get("Favorite Count", 0),
+            "retweets": bookmark.get("Retweet Count", 0),
+            "replies": bookmark.get("Reply Count", 0),
+            "tweet_url": f"https://x.com/{bookmark.get('User Screen Name', 'unknown')}/status/{tweet_id}"
+        }
+        tweets_data.append(tweet_data)
+
+    return tweets_data
 
 
 def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
@@ -1658,125 +1849,275 @@ def cmd_generate(args: argparse.Namespace) -> None:
         with open(MASTER_HTML_DIR / "tweets" / f"{tweet_id}.html", "w", encoding="utf-8") as f:
             f.write(page_html)
 
-    # Generate main index (chronological) with search
-    print("Generating main index...")
+    # Generate main index (chronological) with infinite scroll
+    print("Generating main index with infinite scroll...")
 
-    # Create compact search index for embedding (suggestions only, no full index)
+    # Create data directory and export tweets JSON
+    data_dir = MASTER_HTML_DIR / "data"
+    data_dir.mkdir(exist_ok=True)
+
+    tweets_json = generate_tweets_json(bookmarks, categories_data, media_mode="local")
+    with open(data_dir / "tweets.json", "w", encoding="utf-8") as f:
+        json.dump(tweets_json, f)
+    print(f"  Exported {len(tweets_json)} tweets to data/tweets.json")
+
+    # Create compact search index for suggestions
     search_suggestions = json.dumps(search_index.get("suggestions", {}))
-    tweets_html = "\n".join(render_tweet_card(b, categories_data) for b in bookmarks)
 
     index_content = f"""
 <h1>Twitter Bookmarks</h1>
-<p class="meta">{len(bookmarks)} bookmarks</p>
+<p class="meta"><span id="shown-count">0</span> of {len(bookmarks)} bookmarks</p>
 <div class="search-container">
     <input type="text" id="search-input" class="search-box" placeholder="Search tweets... (type @ for profiles)" autocomplete="off">
     <div id="search-suggestions" class="search-suggestions hidden"></div>
 </div>
 <div id="search-results" class="search-results hidden"></div>
-<div id="tweets-container">
-{tweets_html}
-</div>
+<div id="tweets-container" class="tweet-list"></div>
+<div id="scroll-sentinel"></div>
+<div id="loading-indicator" class="loading-indicator">Loading...</div>
 <script>
 const SUGGESTIONS = {search_suggestions};
-const searchInput = document.getElementById('search-input');
-const suggestionsDiv = document.getElementById('search-suggestions');
-let selectedIdx = -1;
+const BATCH_SIZE = 50;
+const CATEGORIES_PATH = 'categories/';
 
-function showSuggestions(query) {{
-    if (!query || query.length < 2) {{
-        suggestionsDiv.classList.add('hidden');
+let allTweets = [];
+let filteredTweets = [];
+let displayedCount = 0;
+let isLoading = false;
+let searchTimeout = null;
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', init);
+
+async function init() {{
+    try {{
+        const response = await fetch('data/tweets.json');
+        allTweets = await response.json();
+        filteredTweets = allTweets;
+        loadMoreTweets();
+        setupInfiniteScroll();
+        setupSearch();
+    }} catch (e) {{
+        console.error('Failed to load tweets:', e);
+        document.getElementById('loading-indicator').textContent = 'Failed to load tweets';
+    }}
+}}
+
+function loadMoreTweets() {{
+    if (isLoading || displayedCount >= filteredTweets.length) {{
+        updateLoadingIndicator();
         return;
     }}
+    isLoading = true;
 
-    const isProfile = query.startsWith('@');
-    const searchTerm = isProfile ? query.slice(1).toLowerCase() : query.toLowerCase();
-    const source = isProfile ? SUGGESTIONS.profiles : SUGGESTIONS.words;
+    const batch = filteredTweets.slice(displayedCount, displayedCount + BATCH_SIZE);
+    const container = document.getElementById('tweets-container');
+    const fragment = document.createDocumentFragment();
 
-    const matches = source.filter(s => {{
-        const term = isProfile ? s.slice(1).toLowerCase() : s.toLowerCase();
-        return term.includes(searchTerm);
-    }}).slice(0, 8);
+    batch.forEach(tweet => {{
+        fragment.appendChild(renderTweetCard(tweet));
+    }});
 
-    if (matches.length === 0) {{
-        suggestionsDiv.classList.add('hidden');
-        return;
+    container.appendChild(fragment);
+    displayedCount += batch.length;
+    isLoading = false;
+    updateShownCount();
+    updateLoadingIndicator();
+}}
+
+function updateShownCount() {{
+    document.getElementById('shown-count').textContent = displayedCount;
+}}
+
+function updateLoadingIndicator() {{
+    const indicator = document.getElementById('loading-indicator');
+    if (displayedCount >= filteredTweets.length) {{
+        indicator.textContent = filteredTweets.length === allTweets.length
+            ? 'All tweets loaded'
+            : `${{filteredTweets.length}} matches loaded`;
+        indicator.classList.add('done');
+    }} else {{
+        indicator.textContent = 'Loading...';
+        indicator.classList.remove('done');
     }}
+}}
 
-    suggestionsDiv.innerHTML = matches.map((m, i) =>
-        `<div data-value="${{m}}" class="${{i === selectedIdx ? 'selected' : ''}}">${{m}}</div>`
-    ).join('');
-    suggestionsDiv.classList.remove('hidden');
-    selectedIdx = -1;
+function setupInfiniteScroll() {{
+    const sentinel = document.getElementById('scroll-sentinel');
+    const observer = new IntersectionObserver(entries => {{
+        if (entries[0].isIntersecting && displayedCount < filteredTweets.length) {{
+            loadMoreTweets();
+        }}
+    }}, {{ rootMargin: '200px' }});
+    observer.observe(sentinel);
+}}
 
-    suggestionsDiv.querySelectorAll('div').forEach(div => {{
-        div.addEventListener('click', () => {{
-            searchInput.value = div.dataset.value;
+function setupSearch() {{
+    const searchInput = document.getElementById('search-input');
+    const suggestionsDiv = document.getElementById('search-suggestions');
+    let selectedIdx = -1;
+
+    searchInput.addEventListener('input', (e) => {{
+        showSuggestions(e.target.value);
+        // Debounce search
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => filterTweets(e.target.value), 200);
+    }});
+
+    searchInput.addEventListener('keydown', (e) => {{
+        const items = suggestionsDiv.querySelectorAll('div');
+        if (e.key === 'ArrowDown') {{
+            e.preventDefault();
+            selectedIdx = Math.min(selectedIdx + 1, items.length - 1);
+            items.forEach((item, i) => item.classList.toggle('selected', i === selectedIdx));
+        }} else if (e.key === 'ArrowUp') {{
+            e.preventDefault();
+            selectedIdx = Math.max(selectedIdx - 1, 0);
+            items.forEach((item, i) => item.classList.toggle('selected', i === selectedIdx));
+        }} else if (e.key === 'Tab' || e.key === 'Enter') {{
+            if (selectedIdx >= 0 && items[selectedIdx]) {{
+                e.preventDefault();
+                searchInput.value = items[selectedIdx].dataset.value;
+                suggestionsDiv.classList.add('hidden');
+                filterTweets(searchInput.value);
+            }}
+        }} else if (e.key === 'Escape') {{
             suggestionsDiv.classList.add('hidden');
-            filterTweets(div.dataset.value);
+        }}
+    }});
+
+    function showSuggestions(query) {{
+        if (!query || query.length < 2) {{
+            suggestionsDiv.classList.add('hidden');
+            return;
+        }}
+        const isProfile = query.startsWith('@');
+        const searchTerm = isProfile ? query.slice(1).toLowerCase() : query.toLowerCase();
+        const source = isProfile ? SUGGESTIONS.profiles : SUGGESTIONS.words;
+        const matches = (source || []).filter(s => {{
+            const term = isProfile ? s.slice(1).toLowerCase() : s.toLowerCase();
+            return term.includes(searchTerm);
+        }}).slice(0, 8);
+
+        if (matches.length === 0) {{
+            suggestionsDiv.classList.add('hidden');
+            return;
+        }}
+        suggestionsDiv.innerHTML = matches.map((m, i) =>
+            `<div data-value="${{m}}" class="${{i === selectedIdx ? 'selected' : ''}}">${{m}}</div>`
+        ).join('');
+        suggestionsDiv.classList.remove('hidden');
+        selectedIdx = -1;
+
+        suggestionsDiv.querySelectorAll('div').forEach(div => {{
+            div.addEventListener('click', () => {{
+                searchInput.value = div.dataset.value;
+                suggestionsDiv.classList.add('hidden');
+                filterTweets(div.dataset.value);
+            }});
         }});
+    }}
+
+    document.addEventListener('click', (e) => {{
+        if (!e.target.closest('.search-container')) {{
+            suggestionsDiv.classList.add('hidden');
+        }}
     }});
 }}
 
 function filterTweets(query) {{
-    query = query.toLowerCase();
-    const isProfile = query.startsWith('@');
-    const searchTerm = isProfile ? query.slice(1) : query;
+    query = (query || '').toLowerCase().trim();
     const resultsDiv = document.getElementById('search-results');
-    let matchCount = 0;
 
-    document.querySelectorAll('.tweet-card').forEach(card => {{
-        const text = card.dataset.text || '';
-        let show = !query;
-        if (isProfile) {{
-            const handle = card.querySelector('.author-handle a')?.textContent?.toLowerCase() || '';
-            show = handle.includes(searchTerm);
-        }} else {{
-            show = text.includes(searchTerm);
-        }}
-        card.classList.toggle('hidden', !show);
-        if (show) matchCount++;
-    }});
+    if (!query) {{
+        filteredTweets = allTweets;
+    }} else {{
+        const isProfile = query.startsWith('@');
+        const searchTerm = isProfile ? query.slice(1) : query;
+        filteredTweets = allTweets.filter(t => {{
+            if (isProfile) {{
+                return t.author.toLowerCase().includes(searchTerm);
+            }}
+            return t.text.toLowerCase().includes(searchTerm) ||
+                   t.author.toLowerCase().includes(searchTerm) ||
+                   t.author_name.toLowerCase().includes(searchTerm);
+        }});
+    }}
+
+    // Reset and re-render
+    document.getElementById('tweets-container').innerHTML = '';
+    displayedCount = 0;
+    loadMoreTweets();
 
     if (query) {{
-        resultsDiv.textContent = `${{matchCount}} bookmark${{matchCount !== 1 ? 's' : ''}} found`;
+        resultsDiv.textContent = `${{filteredTweets.length}} bookmark${{filteredTweets.length !== 1 ? 's' : ''}} found`;
         resultsDiv.classList.remove('hidden');
     }} else {{
         resultsDiv.classList.add('hidden');
     }}
 }}
 
-searchInput.addEventListener('input', (e) => {{
-    showSuggestions(e.target.value);
-    filterTweets(e.target.value);
-}});
+function renderTweetCard(tweet) {{
+    const card = document.createElement('article');
+    card.className = 'tweet-card';
 
-searchInput.addEventListener('keydown', (e) => {{
-    const items = suggestionsDiv.querySelectorAll('div');
-    if (e.key === 'ArrowDown') {{
-        e.preventDefault();
-        selectedIdx = Math.min(selectedIdx + 1, items.length - 1);
-        items.forEach((item, i) => item.classList.toggle('selected', i === selectedIdx));
-    }} else if (e.key === 'ArrowUp') {{
-        e.preventDefault();
-        selectedIdx = Math.max(selectedIdx - 1, 0);
-        items.forEach((item, i) => item.classList.toggle('selected', i === selectedIdx));
-    }} else if (e.key === 'Tab' || e.key === 'Enter') {{
-        if (selectedIdx >= 0 && items[selectedIdx]) {{
-            e.preventDefault();
-            searchInput.value = items[selectedIdx].dataset.value;
-            suggestionsDiv.classList.add('hidden');
-            filterTweets(searchInput.value);
+    const categoriesHtml = tweet.categories.map(c =>
+        `<a href="${{CATEGORIES_PATH}}${{c.id}}.html" class="category-tag">${{c.name}}</a>`
+    ).join(' ');
+
+    const mediaHtml = renderMedia(tweet.media, tweet.tweet_url);
+
+    card.innerHTML = `
+        <div class="tweet-header">
+            <img class="avatar" src="${{tweet.avatar}}" alt="${{tweet.author_name}}" onerror="this.style.display='none'">
+            <div class="author-info">
+                <div class="author-name">${{escapeHtml(tweet.author_name)}}</div>
+                <div class="author-handle">
+                    <a href="https://x.com/${{tweet.author.slice(1)}}" target="_blank">${{tweet.author}}</a>
+                </div>
+            </div>
+        </div>
+        <div class="tweet-text">${{escapeHtml(tweet.text)}}</div>
+        ${{mediaHtml}}
+        ${{categoriesHtml ? `<div class="tweet-categories">${{categoriesHtml}}</div>` : ''}}
+        <div class="tweet-stats">
+            <span>${{tweet.likes}} likes</span>
+            <span>${{tweet.retweets}} retweets</span>
+            <span>${{tweet.replies}} replies</span>
+            <span>${{tweet.date_display}}</span>
+        </div>
+        <div class="tweet-links">
+            <a href="${{tweet.tweet_url}}" target="_blank">View on X</a>
+            | <a href="tweets/${{tweet.id}}.html">Details</a>
+        </div>
+    `;
+    return card;
+}}
+
+function renderMedia(media, tweetUrl) {{
+    if (!media || media.length === 0) return '';
+    const items = media.map(m => {{
+        if (m.type === 'video') {{
+            if (m.src && !m.src.startsWith('http')) {{
+                const posterAttr = m.poster ? ` poster="${{m.poster}}"` : '';
+                const preload = m.poster ? 'none' : 'metadata';
+                return `<video src="${{m.src}}"${{posterAttr}} controls preload="${{preload}}"></video>`;
+            }}
+            // CDN video - show placeholder
+            return `<a href="${{tweetUrl}}" target="_blank" class="video-thumbnail" title="View video on X">
+                <div class="video-placeholder"><span class="play-icon">▶</span><span class="video-label">Video - View on X</span></div>
+            </a>`;
         }}
-    }} else if (e.key === 'Escape') {{
-        suggestionsDiv.classList.add('hidden');
-    }}
-}});
+        return `<img src="${{m.src}}" alt="Tweet media" loading="lazy">`;
+    }}).join('');
+    return `<div class="tweet-media">${{items}}</div>`;
+}}
 
-document.addEventListener('click', (e) => {{
-    if (!e.target.closest('.search-container')) {{
-        suggestionsDiv.classList.add('hidden');
-    }}
-}});
+function escapeHtml(text) {{
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}}
 </script>
 """
 
@@ -1785,7 +2126,7 @@ document.addEventListener('click', (e) => {{
     index_html = index_html.replace('../index.html', 'index.html')
     index_html = index_html.replace('../categories/', 'categories/')
     index_html = index_html.replace('../timeline/', 'timeline/')
-    index_html = index_html.replace('../../media/', '../media/')  # Fix for root-level page
+    index_html = index_html.replace('../stories/', 'stories/')
 
     with open(MASTER_HTML_DIR / "index.html", "w", encoding="utf-8") as f:
         f.write(index_html)
@@ -2023,59 +2364,252 @@ if (filterYear) {{
 
     # Generate timeline pages
     print("Generating timeline pages...")
+
+    # Build comprehensive timeline data structure
+    # {year: {total, categories: {cat_id: count}, months: {mm: {total, categories}}}}
+    timeline_data: dict = {}
     by_period: dict[str, list[dict]] = defaultdict(list)
 
     for bookmark in bookmarks:
         dt = parse_tweet_date(bookmark.get("Created At", ""))
-        if dt:
-            periods = get_time_periods(dt)
-            by_period[f"year-{periods['year']}"].append(bookmark)
-            by_period[f"month-{periods['month']}"].append(bookmark)
-            by_period[f"day-{periods['day']}"].append(bookmark)
+        if not dt:
+            continue
 
-    # Timeline index (years)
-    years = sorted(set(p.split("-")[1] for p in by_period.keys() if p.startswith("year-")), reverse=True)
-    timeline_index = "<h1>Timeline</h1>\n"
+        year = str(dt.year)
+        month = f"{dt.month:02d}"
+        tweet_id = bookmark.get("Tweet Id", "")
+
+        # Get categories for this tweet
+        tweet_cats = []
+        if categories_data:
+            tweet_cats = categories_data.get("tweet_categories", {}).get(tweet_id, [])
+
+        # Initialize year if needed
+        if year not in timeline_data:
+            timeline_data[year] = {"total": 0, "categories": defaultdict(int), "months": {}}
+
+        # Initialize month if needed
+        if month not in timeline_data[year]["months"]:
+            timeline_data[year]["months"][month] = {"total": 0, "categories": defaultdict(int)}
+
+        # Update counts
+        timeline_data[year]["total"] += 1
+        timeline_data[year]["months"][month]["total"] += 1
+
+        for cat_id in tweet_cats:
+            timeline_data[year]["categories"][cat_id] += 1
+            timeline_data[year]["months"][month]["categories"][cat_id] += 1
+
+        # Also keep old structure for month pages
+        periods = get_time_periods(dt)
+        by_period[f"month-{periods['month']}"].append(bookmark)
+
+    # Load stories data for story links
+    stories_available = {}
+    if MASTER_STORIES.exists():
+        stories_data = load_stories()
+        for cat_id, years_dict in stories_data.get("category_years", {}).items():
+            for year in years_dict.keys():
+                if year not in stories_available:
+                    stories_available[year] = []
+                stories_available[year].append(cat_id)
+
+    # Get category names lookup
+    cat_names = {}
+    if categories_data:
+        for cat_id, cat_info in categories_data.get("categories", {}).items():
+            cat_names[cat_id] = cat_info.get("name", cat_id)
+
+    # Generate collapsible Timeline index
+    years = sorted(timeline_data.keys(), reverse=True)
+
+    timeline_content = "<h1>Timeline</h1>\n"
+    timeline_content += f'<p class="meta">{len(bookmarks)} bookmarks across {len(years)} years</p>\n'
+
     for year in years:
-        count = len(by_period.get(f"year-{year}", []))
-        timeline_index += f'<div class="tweet-card"><a href="{year}/index.html">{year}</a> - {count} bookmarks</div>\n'
+        year_data = timeline_data[year]
+        total = year_data["total"]
 
-    timeline_html = HTML_BASE.format(title="Timeline", content=timeline_index)
+        # Top categories for this year (sorted by count)
+        top_cats = sorted(year_data["categories"].items(), key=lambda x: x[1], reverse=True)[:5]
+        cats_html = " ".join(
+            f'<span class="category-tag">{cat_names.get(cat_id, cat_id)} ({count})</span>'
+            for cat_id, count in top_cats
+        )
+
+        # Stories available for this year
+        year_stories = stories_available.get(year, [])
+        stories_html = ""
+        if year_stories:
+            stories_html = f'<div class="stories-available">{len(year_stories)} stories</div>'
+
+        # Months summary
+        months_sorted = sorted(year_data["months"].keys(), reverse=True)
+        month_names = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+        timeline_content += f'''
+<div class="timeline-year" data-year="{year}">
+    <div class="year-header" onclick="toggleYear('{year}')">
+        <span class="year-toggle">▶</span>
+        <span class="year-name">{year}</span>
+        <span class="year-count">{total} bookmarks</span>
+        {stories_html}
+    </div>
+    <div class="year-categories">{cats_html}</div>
+    <div class="year-months hidden" id="months-{year}">
+'''
+
+        for mm in months_sorted:
+            month_data = year_data["months"][mm]
+            month_total = month_data["total"]
+            month_name = month_names[int(mm) - 1]
+
+            # Top categories for this month
+            month_top_cats = sorted(month_data["categories"].items(), key=lambda x: x[1], reverse=True)[:3]
+            month_cats_html = " ".join(
+                f'<span class="category-tag small">{cat_names.get(cat_id, cat_id)} ({count})</span>'
+                for cat_id, count in month_top_cats
+            )
+
+            timeline_content += f'''
+        <div class="month-card">
+            <a href="{year}/{mm}/index.html" class="month-link">
+                <span class="month-name">{month_name}</span>
+                <span class="month-count">{month_total}</span>
+            </a>
+            <div class="month-categories">{month_cats_html}</div>
+        </div>
+'''
+
+        timeline_content += "    </div>\n</div>\n"
+
+    # Add JavaScript for collapsible behavior
+    timeline_content += """
+<script>
+function toggleYear(year) {
+    const monthsDiv = document.getElementById('months-' + year);
+    const yearDiv = document.querySelector(`.timeline-year[data-year="${year}"]`);
+    const toggle = yearDiv.querySelector('.year-toggle');
+
+    if (monthsDiv.classList.contains('hidden')) {
+        monthsDiv.classList.remove('hidden');
+        toggle.textContent = '▼';
+        yearDiv.classList.add('expanded');
+    } else {
+        monthsDiv.classList.add('hidden');
+        toggle.textContent = '▶';
+        yearDiv.classList.remove('expanded');
+    }
+}
+</script>
+<style>
+.timeline-year {
+    background: var(--card-bg);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    margin-bottom: 15px;
+    overflow: hidden;
+}
+.year-header {
+    padding: 15px 20px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+    background: var(--card-bg);
+    transition: background 0.2s;
+}
+.year-header:hover {
+    background: var(--bg);
+}
+.year-toggle {
+    font-size: 12px;
+    color: var(--secondary);
+    transition: transform 0.2s;
+}
+.timeline-year.expanded .year-toggle {
+    transform: rotate(90deg);
+}
+.year-name {
+    font-size: 1.4em;
+    font-weight: bold;
+}
+.year-count {
+    color: var(--secondary);
+}
+.stories-available {
+    background: var(--link);
+    color: white;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.85em;
+    margin-left: auto;
+}
+.year-categories {
+    padding: 0 20px 15px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+.year-months {
+    border-top: 1px solid var(--border);
+    padding: 15px 20px;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+    gap: 10px;
+}
+.month-card {
+    background: var(--bg);
+    border-radius: 8px;
+    padding: 12px;
+}
+.month-card .month-link {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    text-decoration: none;
+    color: var(--text);
+    font-weight: 500;
+}
+.month-card .month-link:hover {
+    color: var(--link);
+}
+.month-count {
+    background: var(--border);
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 0.85em;
+}
+.month-categories {
+    margin-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+.category-tag.small {
+    font-size: 0.75em;
+    padding: 2px 6px;
+}
+</style>
+"""
+
+    timeline_html = HTML_BASE.format(title="Timeline", content=timeline_content)
     timeline_html = timeline_html.replace('../index.html', '../index.html')
     with open(MASTER_HTML_DIR / "timeline" / "index.html", "w", encoding="utf-8") as f:
         f.write(timeline_html)
 
-    # Year and month pages
+    # Generate month pages (for when users click through)
     for year in years:
         year_dir = MASTER_HTML_DIR / "timeline" / year
         year_dir.mkdir(exist_ok=True)
 
-        year_tweets = by_period.get(f"year-{year}", [])
-        months = sorted(set(
-            p.split("-")[1] + "-" + p.split("-")[2]
-            for p in by_period.keys()
-            if p.startswith(f"month-{year}-")
-        ), reverse=True)
+        for mm in timeline_data[year]["months"].keys():
+            month_key = f"{year}-{mm}"
+            month_tweets = by_period.get(f"month-{month_key}", [])
+            month_name = datetime.strptime(month_key, "%Y-%m").strftime("%B %Y")
 
-        year_content = f"<h1>{year}</h1>\n<p class='meta'>{len(year_tweets)} bookmarks</p>\n"
-        for month in months:
-            month_count = len(by_period.get(f"month-{month}", []))
-            month_name = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
-            month_dir = month.split("-")[1]
-            year_content += f'<div class="tweet-card"><a href="{month_dir}/index.html">{month_name}</a> - {month_count} bookmarks</div>\n'
-
-        year_html = HTML_BASE.format(title=year, content=year_content)
-        with open(year_dir / "index.html", "w", encoding="utf-8") as f:
-            f.write(year_html)
-
-        # Month pages
-        for month in months:
-            month_num = month.split("-")[1]
-            month_dir = year_dir / month_num
+            month_dir = year_dir / mm
             month_dir.mkdir(exist_ok=True)
-
-            month_tweets = by_period.get(f"month-{month}", [])
-            month_name = datetime.strptime(month, "%Y-%m").strftime("%B %Y")
 
             month_content = f"<h1>{month_name}</h1>\n<p class='meta'>{len(month_tweets)} bookmarks</p>\n"
             month_content += "\n".join(render_tweet_card(t, categories_data) for t in month_tweets)
@@ -2763,49 +3297,373 @@ def generate_html_server(output_dir: Path, bookmarks: list[dict], categories_dat
 
     tweet_lookup = {b["Tweet Id"]: b for b in bookmarks}
 
-    # Generate main index (chronological)
-    print("Generating main index...")
+    # Generate main index (chronological) with infinite scroll
+    print("Generating main index with infinite scroll...")
+
+    # Create data directory and export tweets JSON
+    data_dir = html_dir / "data"
+    data_dir.mkdir(exist_ok=True)
+
     sorted_bookmarks = sorted(
         bookmarks,
         key=lambda x: parse_tweet_date(x.get("Created At", "")) or datetime.min.replace(tzinfo=None),
         reverse=True
     )
-    tweets_html = "\n".join(render_tweet_card(b, categories_data, use_server=True) for b in sorted_bookmarks)
-    content = f'''
+    tweets_json = generate_tweets_json(sorted_bookmarks, categories_data, media_mode="server")
+    with open(data_dir / "tweets.json", "w", encoding="utf-8") as f:
+        json.dump(tweets_json, f)
+    print(f"  Exported {len(tweets_json)} tweets to data/tweets.json")
+
+    # Build search index for suggestions
+    search_index = build_search_index(bookmarks)
+    search_suggestions = json.dumps(search_index.get("suggestions", {}))
+
+    index_content = f"""
 <h1>Twitter Bookmarks</h1>
-<p class="meta">{len(bookmarks)} bookmarks</p>
-<div class="tweet-list">
-{tweets_html}
+<p class="meta"><span id="shown-count">0</span> of {len(bookmarks)} bookmarks</p>
+<div class="search-container">
+    <input type="text" id="search-input" class="search-box" placeholder="Search tweets... (type @ for profiles)" autocomplete="off">
+    <div id="search-suggestions" class="search-suggestions hidden"></div>
 </div>
-'''
-    page = HTML_BASE.format(title="Twitter Bookmarks", content=content)
+<div id="search-results" class="search-results hidden"></div>
+<div id="tweets-container" class="tweet-list"></div>
+<div id="scroll-sentinel"></div>
+<div id="loading-indicator" class="loading-indicator">Loading...</div>
+<script>
+const SUGGESTIONS = {search_suggestions};
+const BATCH_SIZE = 50;
+const CATEGORIES_PATH = '/categories/';
+
+let allTweets = [];
+let filteredTweets = [];
+let displayedCount = 0;
+let isLoading = false;
+let searchTimeout = null;
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', init);
+
+async function init() {{
+    try {{
+        const response = await fetch('/data/tweets.json');
+        allTweets = await response.json();
+        filteredTweets = allTweets;
+        loadMoreTweets();
+        setupInfiniteScroll();
+        setupSearch();
+    }} catch (e) {{
+        console.error('Failed to load tweets:', e);
+        document.getElementById('loading-indicator').textContent = 'Failed to load tweets';
+    }}
+}}
+
+function loadMoreTweets() {{
+    if (isLoading || displayedCount >= filteredTweets.length) {{
+        updateLoadingIndicator();
+        return;
+    }}
+    isLoading = true;
+
+    const batch = filteredTweets.slice(displayedCount, displayedCount + BATCH_SIZE);
+    const container = document.getElementById('tweets-container');
+    const fragment = document.createDocumentFragment();
+
+    batch.forEach(tweet => {{
+        fragment.appendChild(renderTweetCard(tweet));
+    }});
+
+    container.appendChild(fragment);
+    displayedCount += batch.length;
+    isLoading = false;
+    updateShownCount();
+    updateLoadingIndicator();
+}}
+
+function updateShownCount() {{
+    document.getElementById('shown-count').textContent = displayedCount;
+}}
+
+function updateLoadingIndicator() {{
+    const indicator = document.getElementById('loading-indicator');
+    if (displayedCount >= filteredTweets.length) {{
+        indicator.textContent = filteredTweets.length === allTweets.length
+            ? 'All tweets loaded'
+            : `${{filteredTweets.length}} matches loaded`;
+        indicator.classList.add('done');
+    }} else {{
+        indicator.textContent = 'Loading...';
+        indicator.classList.remove('done');
+    }}
+}}
+
+function setupInfiniteScroll() {{
+    const sentinel = document.getElementById('scroll-sentinel');
+    const observer = new IntersectionObserver(entries => {{
+        if (entries[0].isIntersecting && displayedCount < filteredTweets.length) {{
+            loadMoreTweets();
+        }}
+    }}, {{ rootMargin: '200px' }});
+    observer.observe(sentinel);
+}}
+
+function setupSearch() {{
+    const searchInput = document.getElementById('search-input');
+    const suggestionsDiv = document.getElementById('search-suggestions');
+    let selectedIdx = -1;
+
+    searchInput.addEventListener('input', (e) => {{
+        showSuggestions(e.target.value);
+        // Debounce search
+        clearTimeout(searchTimeout);
+        searchTimeout = setTimeout(() => filterTweets(e.target.value), 200);
+    }});
+
+    searchInput.addEventListener('keydown', (e) => {{
+        const items = suggestionsDiv.querySelectorAll('div');
+        if (e.key === 'ArrowDown') {{
+            e.preventDefault();
+            selectedIdx = Math.min(selectedIdx + 1, items.length - 1);
+            items.forEach((item, i) => item.classList.toggle('selected', i === selectedIdx));
+        }} else if (e.key === 'ArrowUp') {{
+            e.preventDefault();
+            selectedIdx = Math.max(selectedIdx - 1, 0);
+            items.forEach((item, i) => item.classList.toggle('selected', i === selectedIdx));
+        }} else if (e.key === 'Tab' || e.key === 'Enter') {{
+            if (selectedIdx >= 0 && items[selectedIdx]) {{
+                e.preventDefault();
+                searchInput.value = items[selectedIdx].dataset.value;
+                suggestionsDiv.classList.add('hidden');
+                filterTweets(searchInput.value);
+            }}
+        }} else if (e.key === 'Escape') {{
+            suggestionsDiv.classList.add('hidden');
+        }}
+    }});
+
+    function showSuggestions(query) {{
+        if (!query || query.length < 2) {{
+            suggestionsDiv.classList.add('hidden');
+            return;
+        }}
+        const isProfile = query.startsWith('@');
+        const searchTerm = isProfile ? query.slice(1).toLowerCase() : query.toLowerCase();
+        const source = isProfile ? SUGGESTIONS.profiles : SUGGESTIONS.words;
+        const matches = (source || []).filter(s => {{
+            const term = isProfile ? s.slice(1).toLowerCase() : s.toLowerCase();
+            return term.includes(searchTerm);
+        }}).slice(0, 8);
+
+        if (matches.length === 0) {{
+            suggestionsDiv.classList.add('hidden');
+            return;
+        }}
+        suggestionsDiv.innerHTML = matches.map((m, i) =>
+            `<div data-value="${{m}}" class="${{i === selectedIdx ? 'selected' : ''}}">${{m}}</div>`
+        ).join('');
+        suggestionsDiv.classList.remove('hidden');
+        selectedIdx = -1;
+
+        suggestionsDiv.querySelectorAll('div').forEach(div => {{
+            div.addEventListener('click', () => {{
+                searchInput.value = div.dataset.value;
+                suggestionsDiv.classList.add('hidden');
+                filterTweets(div.dataset.value);
+            }});
+        }});
+    }}
+
+    document.addEventListener('click', (e) => {{
+        if (!e.target.closest('.search-container')) {{
+            suggestionsDiv.classList.add('hidden');
+        }}
+    }});
+}}
+
+function filterTweets(query) {{
+    query = (query || '').toLowerCase().trim();
+    const resultsDiv = document.getElementById('search-results');
+
+    if (!query) {{
+        filteredTweets = allTweets;
+    }} else {{
+        const isProfile = query.startsWith('@');
+        const searchTerm = isProfile ? query.slice(1) : query;
+        filteredTweets = allTweets.filter(t => {{
+            if (isProfile) {{
+                return t.author.toLowerCase().includes(searchTerm);
+            }}
+            return t.text.toLowerCase().includes(searchTerm) ||
+                   t.author.toLowerCase().includes(searchTerm) ||
+                   t.author_name.toLowerCase().includes(searchTerm);
+        }});
+    }}
+
+    // Reset and re-render
+    document.getElementById('tweets-container').innerHTML = '';
+    displayedCount = 0;
+    loadMoreTweets();
+
+    if (query) {{
+        resultsDiv.textContent = `${{filteredTweets.length}} bookmark${{filteredTweets.length !== 1 ? 's' : ''}} found`;
+        resultsDiv.classList.remove('hidden');
+    }} else {{
+        resultsDiv.classList.add('hidden');
+    }}
+}}
+
+function renderTweetCard(tweet) {{
+    const card = document.createElement('article');
+    card.className = 'tweet-card';
+
+    const categoriesHtml = tweet.categories.map(c =>
+        `<a href="${{CATEGORIES_PATH}}${{c.id}}.html" class="category-tag">${{c.name}}</a>`
+    ).join(' ');
+
+    const mediaHtml = renderMedia(tweet.media, tweet.tweet_url);
+
+    card.innerHTML = `
+        <div class="tweet-header">
+            <img class="avatar" src="${{tweet.avatar}}" alt="${{tweet.author_name}}" onerror="this.style.display='none'">
+            <div class="author-info">
+                <div class="author-name">${{escapeHtml(tweet.author_name)}}</div>
+                <div class="author-handle">
+                    <a href="https://x.com/${{tweet.author.slice(1)}}" target="_blank">${{tweet.author}}</a>
+                </div>
+            </div>
+        </div>
+        <div class="tweet-text">${{escapeHtml(tweet.text)}}</div>
+        ${{mediaHtml}}
+        ${{categoriesHtml ? `<div class="tweet-categories">${{categoriesHtml}}</div>` : ''}}
+        <div class="tweet-stats">
+            <span>${{tweet.likes}} likes</span>
+            <span>${{tweet.retweets}} retweets</span>
+            <span>${{tweet.replies}} replies</span>
+            <span>${{tweet.date_display}}</span>
+        </div>
+        <div class="tweet-links">
+            <a href="${{tweet.tweet_url}}" target="_blank">View on X</a>
+            | <a href="/tweets/${{tweet.id}}.html">Details</a>
+        </div>
+    `;
+    return card;
+}}
+
+function renderMedia(media, tweetUrl) {{
+    if (!media || media.length === 0) return '';
+    const items = media.map(m => {{
+        if (m.type === 'video') {{
+            const posterAttr = m.poster ? ` poster="${{m.poster}}"` : '';
+            const preload = m.poster ? 'none' : 'metadata';
+            return `<video src="${{m.src}}"${{posterAttr}} controls preload="${{preload}}"></video>`;
+        }}
+        return `<img src="${{m.src}}" alt="Tweet media" loading="lazy">`;
+    }}).join('');
+    return `<div class="tweet-media">${{items}}</div>`;
+}}
+
+function escapeHtml(text) {{
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}}
+</script>
+"""
+    page = HTML_BASE.format(title="Twitter Bookmarks", content=index_content)
     page = fix_paths_for_server(page)
     page = add_newgen_link(page)
-    # For root index, fix remaining relative links
     page = page.replace('href="/index.html"', 'href="/"')
     with open(html_dir / "index.html", "w", encoding="utf-8") as f:
         f.write(page)
 
-    # Generate category index
+    # Generate category index with timeline nav (matching local version)
     print("Generating category pages...")
     categories = categories_data.get("categories", {})
-    cat_list_html = ""
-    for cat_id, cat_info in sorted(categories.items(), key=lambda x: x[1].get("name", x[0])):
+
+    # Build category timeline data
+    category_timeline = build_category_timeline(bookmarks, categories_data)
+
+    # Build stories availability map for JavaScript
+    stories_available = {}
+    if stories_data and stories_data.get("category_years"):
+        for cat, years in stories_data.get("category_years", {}).items():
+            stories_available[cat] = list(years.keys())
+
+    cat_index_content = "<h1>Categories</h1>\n"
+    for cat_id, cat_info in sorted(categories.items(), key=lambda x: len(x[1].get("tweet_ids", [])), reverse=True):
         tweet_count = len(cat_info.get("tweet_ids", []))
-        cat_list_html += f'''
-<div class="category-card">
-    <h3><a href="{cat_id}.html">{cat_info.get("name", cat_id)}</a></h3>
-    <p>{cat_info.get("description", "")[:200]}</p>
-    <span class="meta">{tweet_count} bookmarks</span>
+
+        # Build timeline nav for this category
+        timeline_html = ""
+        if cat_id in category_timeline:
+            years_data = category_timeline[cat_id]
+            sorted_years = sorted(years_data.keys(), reverse=True)
+            if sorted_years:
+                year_links = []
+                for year in sorted_years:
+                    year_total = sum(years_data[year].values())
+                    year_links.append(f'<span class="year-link" data-year="{year}" data-cat="{cat_id}">{year} ({year_total})</span>')
+                timeline_html = f'''
+    <div class="timeline-nav" data-timeline='{json.dumps(years_data)}'>
+        <div class="year-row">{" ".join(year_links)}</div>
+        <div class="month-row hidden"></div>
+    </div>'''
+
+        cat_index_content += f"""
+<div class="tweet-card category-card" data-cat="{cat_id}">
+    <h3><a href="{cat_id}.html">{cat_info.get('name', cat_id)}</a></h3>
+    <p>{cat_info.get('description', '')}</p>
+    <p class="meta">{tweet_count} bookmarks</p>{timeline_html}
 </div>
-'''
-    content = f'''
-<h1>Categories</h1>
-<div class="category-list">
-{cat_list_html}
-</div>
-'''
-    page = HTML_BASE.format(title="Categories", content=content)
+"""
+
+    # Add JavaScript for timeline expand/collapse
+    timeline_js = f"""
+<script>
+const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const STORIES_AVAILABLE = {json.dumps(stories_available)};
+
+document.querySelectorAll('.year-link').forEach(link => {{
+    link.addEventListener('click', function() {{
+        const card = this.closest('.category-card');
+        const nav = this.closest('.timeline-nav');
+        const timeline = JSON.parse(nav.dataset.timeline);
+        const year = this.dataset.year;
+        const cat = this.dataset.cat;
+        const monthRow = nav.querySelector('.month-row');
+
+        // Toggle active state
+        const wasActive = this.classList.contains('active');
+        nav.querySelectorAll('.year-link').forEach(l => l.classList.remove('active'));
+
+        if (wasActive) {{
+            monthRow.classList.add('hidden');
+            monthRow.innerHTML = '';
+        }} else {{
+            this.classList.add('active');
+            const months = timeline[year] || {{}};
+            const monthLinks = [];
+
+            // Add story link if available
+            if (STORIES_AVAILABLE[cat] && STORIES_AVAILABLE[cat].includes(year)) {{
+                monthLinks.push(`<a href="/stories/${{cat}}/${{year}}.html" class="month-link" style="background: var(--link); color: white;">View ${{year}} Story</a>`);
+            }}
+
+            for (let m = 1; m <= 12; m++) {{
+                const mm = m.toString().padStart(2, '0');
+                const count = months[mm] || 0;
+                if (count > 0) {{
+                    monthLinks.push(`<a href="${{cat}}.html?year=${{year}}&month=${{mm}}" class="month-link">${{MONTH_NAMES[m-1]}} (${{count}})</a>`);
+                }}
+            }}
+            monthRow.innerHTML = monthLinks.join('');
+            monthRow.classList.remove('hidden');
+        }}
+    }});
+}});
+</script>
+"""
+    cat_index_content += timeline_js
+    page = HTML_BASE.format(title="Categories", content=cat_index_content)
     page = fix_paths_for_server(page)
     page = add_newgen_link(page)
     with open(html_dir / "categories" / "index.html", "w", encoding="utf-8") as f:
@@ -2857,6 +3715,31 @@ def generate_html_server(output_dir: Path, bookmarks: list[dict], categories_dat
                 with open(html_file, "w", encoding="utf-8") as f:
                     f.write(content)
 
+    # Copy timeline from master (already generated with correct structure)
+    src_timeline = MASTER_HTML_DIR / "timeline"
+    if src_timeline.exists():
+        print("Copying timeline pages...")
+        import shutil as sh
+        dst_timeline = html_dir / "timeline"
+        if dst_timeline.exists():
+            sh.rmtree(dst_timeline)
+        sh.copytree(src_timeline, dst_timeline)
+
+        # Fix paths in timeline files
+        for html_file in dst_timeline.glob("**/*.html"):
+            with open(html_file, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            content = fix_paths_for_server(content)
+            content = add_newgen_link(content)
+            # Fix media paths
+            content = content.replace('../../media/', '/media/bookmarks/')
+            content = content.replace('../../../media/', '/media/bookmarks/')
+            content = content.replace('../../../../media/', '/media/bookmarks/')
+
+            with open(html_file, "w", encoding="utf-8") as f:
+                f.write(content)
+
     print(f"Generated server HTML in {html_dir}")
 
 
@@ -2898,6 +3781,23 @@ def cmd_publish_server(args: argparse.Namespace) -> None:
     print(f"\nTo deploy, sync to server:")
     print(f"  rsync -avz --delete {SERVER_HTML_DIR}/ user@server:/app/bookmarks-html/")
     print(f"  rsync -avz --progress {MASTER_MEDIA_DIR}/ user@server:/app/bookmarks-media/")
+
+
+def cmd_thumbnails(args: argparse.Namespace) -> None:
+    """Generate video thumbnails for all videos in master/media"""
+    print("=== Generating Video Thumbnails ===")
+
+    if not MASTER_MEDIA_DIR.exists():
+        print(f"Media directory not found: {MASTER_MEDIA_DIR}")
+        print("Run 'consolidate' first to collect media files.")
+        return
+
+    count = generate_video_thumbnails(MASTER_MEDIA_DIR)
+    if count > 0:
+        print(f"\n✓ Generated {count} new thumbnails")
+        print("\nRun 'generate' and 'publish-server' to update HTML with poster images.")
+    else:
+        print("\n✓ All thumbnails already exist (or no videos found)")
 
 
 def cmd_publish(args: argparse.Namespace) -> None:
@@ -3052,6 +3952,7 @@ def main():
     subparsers.add_parser("publish", help="Publish to GitHub Pages (dethele.com/twitter) using Twitter CDN")
     subparsers.add_parser("unpublish", help="Remove from GitHub Pages (DESTRUCTIVE)")
     subparsers.add_parser("publish-server", help="Generate HTML for server deployment (twitter.dethele.com)")
+    subparsers.add_parser("thumbnails", help="Generate video thumbnails (requires ffmpeg)")
 
     args = parser.parse_args()
 
@@ -3073,6 +3974,7 @@ def main():
         "publish": cmd_publish,
         "unpublish": cmd_unpublish,
         "publish-server": cmd_publish_server,
+        "thumbnails": cmd_thumbnails,
     }
 
     commands[args.command](args)

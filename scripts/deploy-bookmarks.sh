@@ -18,6 +18,8 @@ NC='\033[0m'
 SERVER_USER="${SERVER_USER:-ec2-user}"
 SERVER_HOST="${SERVER_HOST:-twitter.dethele.com}"
 SERVER="${SERVER_USER}@${SERVER_HOST}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/twitter-bookmarks-key.pem}"
+SSH_OPTS="-i $SSH_KEY -o StrictHostKeyChecking=no"
 
 # Paths
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -65,12 +67,13 @@ fi
 
 # Create remote directories if they don't exist
 echo "Ensuring remote directories exist..."
-ssh "$SERVER" "mkdir -p ${REMOTE_DIR}/bookmarks-html ${REMOTE_DIR}/bookmarks-media"
+ssh $SSH_OPTS "$SERVER" "mkdir -p ${REMOTE_DIR}/bookmarks-html ${REMOTE_DIR}/bookmarks-media"
 
 # Deploy HTML
 if [ "$MEDIA_ONLY" = false ]; then
     echo -e "${YELLOW}Syncing HTML...${NC}"
     rsync -avz --delete \
+        -e "ssh $SSH_OPTS" \
         --exclude '.DS_Store' \
         "$SERVER_HTML/" \
         "${SERVER}:${REMOTE_DIR}/bookmarks-html/"
@@ -81,6 +84,7 @@ fi
 if [ "$HTML_ONLY" = false ]; then
     echo -e "${YELLOW}Syncing media (this may take a while for first sync)...${NC}"
     rsync -avz --progress \
+        -e "ssh $SSH_OPTS" \
         --exclude '.DS_Store' \
         "$MASTER_MEDIA/" \
         "${SERVER}:${REMOTE_DIR}/bookmarks-media/"
