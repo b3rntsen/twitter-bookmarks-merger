@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}View HTML - {{ bookmark.tweet_id }}{% endblock %}
+
+{% block breadcrumb_items %}
+<li><a href="{% url 'bookmark_list' %}">Bookmarks</a></li>
+<li><a href="{% url 'bookmark_detail' bookmark.tweet_id %}">Bookmark {{ bookmark.tweet_id }}</a></li>
+<li><span>View HTML</span></li>
+{% endblock %}
+
+{% block content %}
+<div class="html-view-container">
+    <div class="html-view-header">
+        <h2>HTML View</h2>
+        <a href="{% url 'bookmark_detail' bookmark.tweet_id %}" class="btn btn-secondary">Back to Bookmark</a>
+    </div>
+    
+    <div class="html-view-warning">
+        <p><strong>Note:</strong> This is a sanitized version of the original HTML. JavaScript has been removed for security, and media URLs have been rewritten to point to locally stored files.</p>
+    </div>
+    
+    <iframe 
+        id="htmlPreviewFrame" 
+        srcdoc="{{ html_content|escape }}" 
+        sandbox="allow-same-origin"
+        style="width: 100%; height: 80vh; border: 1px solid #ddd; border-radius: 8px; background: white;"
+        title="HTML Preview"
+    ></iframe>
+</div>
+
+<style>
+.html-view-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 2rem;
+}
+
+.html-view-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+}
+
+.html-view-warning {
+    background-color: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 4px;
+    padding: 1rem;
+    margin-bottom: 1rem;
+    color: #856404;
+}
+
+#htmlPreviewFrame {
+    display: block;
+}
+</style>
+{% endblock %}
+

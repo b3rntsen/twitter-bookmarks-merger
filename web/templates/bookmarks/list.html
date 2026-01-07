@@ -1,0 +1,312 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Bookmarks - Twitter Bookmarks{% endblock %}
+
+{% block breadcrumb_items %}
+<li><span>Bookmarks</span></li>
+{% endblock %}
+
+{% block content %}
+<div class="twitter-feed-container">
+    <div class="feed-header">
+        <h1>Your Bookmarks</h1>
+        <div class="date-navigation">
+            {% if date_nav %}
+                <div class="date-nav-controls">
+                    {% if date_nav.has_previous %}
+                        <a href="?date={{ date_nav.previous_date|date:'Y-m-d' }}{% if search_query %}&search={{ search_query }}{% endif %}{% if author_filter %}&author={{ author_filter }}{% endif %}" class="btn btn-sm">← Previous</a>
+                    {% elif date_nav.available_dates %}
+                        {# Show disabled state if no previous available date #}
+                        <span class="btn btn-sm" style="opacity: 0.5; cursor: not-allowed;">← Previous</span>
+                    {% endif %}
+                    <input 
+                        type="date" 
+                        value="{{ filter_date|date:'Y-m-d' }}"
+                        onchange="changeDate(this.value)"
+                        class="date-picker"
+                        title="Select date"
+                    >
+                    {% if date_nav.has_next %}
+                        <a href="?date={{ date_nav.next_date|date:'Y-m-d' }}{% if search_query %}&search={{ search_query }}{% endif %}{% if author_filter %}&author={{ author_filter }}{% endif %}" class="btn btn-sm">Next →</a>
+                    {% elif date_nav.available_dates %}
+                        {# Show disabled state if no next available date #}
+                        <span class="btn btn-sm" style="opacity: 0.5; cursor: not-allowed;">Next →</span>
+                    {% endif %}
+                    {% if not date_nav.is_today %}
+                        <a href="?{% if search_query %}search={{ search_query }}&{% endif %}{% if author_filter %}author={{ author_filter }}{% endif %}" class="btn btn-sm">Today</a>
+                    {% endif %}
+                </div>
+                <div class="date-info">
+                    <span class="current-date">{{ filter_date|date:"F d, Y" }}</span>
+                    {% if date_nav.is_today %}
+                        <span class="date-badge">Today</span>
+                    {% endif %}
+                </div>
+            {% endif %}
+        </div>
+    </div>
+    
+    <div class="filters-bar">
+        <form method="get" class="filter-form" id="filterForm">
+            <input type="hidden" name="date" value="{{ filter_date|date:'Y-m-d' }}">
+            <input 
+                type="text" 
+                name="search" 
+                placeholder="Search bookmarks..." 
+                value="{{ search_query }}"
+                class="search-input"
+                id="searchInput"
+            >
+            <select name="author" class="author-select" id="authorSelect" onchange="document.getElementById('filterForm').submit();">
+                <option value="">All Authors</option>
+                {% for author in authors %}
+                    <option value="{{ author.username }}" {% if author_filter == author.username %}selected{% endif %}>
+                        {{ author.display_name }} (@{{ author.username }})
+                    </option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-secondary">Filter</button>
+        </form>
+        <div class="bulk-actions">
+            <a href="{% url 'delete_all_bookmarks' %}" class="btn btn-sm btn-danger" onclick="return confirm('Delete ALL bookmarks?');">Delete All</a>
+        </div>
+    </div>
+    
+    {% if not bookmarks %}
+        <div class="processing-status-message">
+            {% if date_nav.is_today %}
+                <div class="status-info">
+                    {% if processing_status.is_processing %}
+                        <p><strong>🔄 Content is being processed right now.</strong></p>
+                        <p>Bookmarks are currently being fetched. Please check back in a few minutes.</p>
+                    {% else %}
+                        <p><strong>Content is processed automatically.</strong></p>
+                        <p>Bookmarks are fetched daily. If no content appears, processing may still be in progress.</p>
+                        {% if processing_status.next_processing_time %}
+                            <p><strong>Next update:</strong> {{ processing_status.next_processing_time|date:"F d, Y g:i A" }} UTC</p>
+                        {% endif %}
+                        {% if processing_status.estimated_processing_time %}
+                            <p><strong>Estimated processing time:</strong> ~{{ processing_status.estimated_processing_time }} minutes</p>
+                        {% endif %}
+                    {% endif %}
+                    <p><a href="{% url 'processing:processing_status' %}">View detailed processing status</a></p>
+                </div>
+            {% else %}
+                <div class="status-info">
+                    <p>No bookmarks found for {{ filter_date|date:"F d, Y" }}.</p>
+                    <p>Content is processed daily. This date may not have had any bookmarks, or processing may not have completed yet.</p>
+                </div>
+            {% endif %}
+        </div>
+    {% endif %}
+    
+    <div class="twitter-feed">
+        {% if bookmarks %}
+            {% for bookmark in bookmarks %}
+                {% include 'bookmarks/tweet_card.html' with tweet=bookmark show_actions=True show_media=True show_engagement=True %}
+            {% endfor %}
+        {% endif %}
+    </div>
+    
+    {% if page_obj.has_other_pages %}
+        <div class="pagination">
+            {% if page_obj.has_previous %}
+                <a href="?page={{ page_obj.previous_page_number }}&date={{ filter_date|date:'Y-m-d' }}{% if search_query %}&search={{ search_query }}{% endif %}{% if author_filter %}&author={{ author_filter }}{% endif %}" class="btn">Previous</a>
+            {% endif %}
+            
+            <span class="page-info">
+                Page {{ page_obj.number }} of {{ page_obj.paginator.num_pages }}
+            </span>
+            
+            {% if page_obj.has_next %}
+                <a href="?page={{ page_obj.next_page_number }}&date={{ filter_date|date:'Y-m-d' }}{% if search_query %}&search={{ search_query }}{% endif %}{% if author_filter %}&author={{ author_filter }}{% endif %}" class="btn">Next</a>
+            {% endif %}
+        </div>
+    {% endif %}
+</div>
+
+<!-- PDF Preview Modal (same as detail view) -->
+<div id="pdfModal" class="pdf-modal" style="display: none;">
+    <div class="pdf-modal-content">
+        <div class="pdf-modal-header">
+            <h3>PDF Preview</h3>
+            <button class="pdf-modal-close" onclick="closePDFModal()" aria-label="Close">&times;</button>
+        </div>
+        <div class="pdf-modal-body">
+            <div id="pdfLoading" class="pdf-loading">
+                <div class="loading-spinner">Loading PDF...</div>
+            </div>
+            <iframe id="pdfPreviewFrame" src="" style="width: 100%; height: calc(90vh - 80px); border: none; display: none;"></iframe>
+        </div>
+    </div>
+</div>
+
+{# Pass available dates to JavaScript for validation #}
+{% if date_nav and date_nav.available_dates %}
+<script id="available-dates-data" type="application/json">
+[{% for date in date_nav.available_dates %}"{{ date|date:'Y-m-d' }}"{% if not forloop.last %},{% endif %}{% endfor %}]
+</script>
+{% endif %}
+
+<script>
+async function previewPDF(url) {
+    const modal = document.getElementById('pdfModal');
+    const frame = document.getElementById('pdfPreviewFrame');
+    const loadingIndicator = document.getElementById('pdfLoading');
+    
+    modal.style.display = 'flex';
+    loadingIndicator.style.display = 'block';
+    frame.style.display = 'none';
+    document.body.style.overflow = 'hidden';
+    
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Failed to load PDF');
+        
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        
+        frame.src = blobUrl;
+        frame.onload = function() {
+            loadingIndicator.style.display = 'none';
+            frame.style.display = 'block';
+        };
+        
+        frame.onerror = function() {
+            loadingIndicator.style.display = 'none';
+            loadingIndicator.innerHTML = '<p style="color: red;">Failed to load PDF.</p>';
+        };
+    } catch (error) {
+        console.error('Error loading PDF:', error);
+        loadingIndicator.style.display = 'none';
+        loadingIndicator.innerHTML = '<p style="color: red;">Error loading PDF.</p>';
+    }
+}
+
+function closePDFModal() {
+    const modal = document.getElementById('pdfModal');
+    const frame = document.getElementById('pdfPreviewFrame');
+    const loadingIndicator = document.getElementById('pdfLoading');
+    
+    modal.style.display = 'none';
+    
+    if (frame.src && frame.src.startsWith('blob:')) {
+        URL.revokeObjectURL(frame.src);
+    }
+    
+    frame.src = '';
+    frame.style.display = 'none';
+    loadingIndicator.style.display = 'block';
+    loadingIndicator.innerHTML = '<div class="loading-spinner">Loading PDF...</div>';
+    document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+        const modal = document.getElementById('pdfModal');
+        if (modal.style.display === 'flex') {
+            closePDFModal();
+        }
+    }
+});
+
+document.getElementById('pdfModal').addEventListener('click', function(event) {
+    if (event.target === this) {
+        closePDFModal();
+    }
+});
+
+function changeDate(dateStr) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('date', dateStr);
+    // Preserve search and author filters
+    {% if search_query %}url.searchParams.set('search', '{{ search_query }}');{% endif %}
+    {% if author_filter %}url.searchParams.set('author', '{{ author_filter }}');{% endif %}
+    window.location.href = url.toString();
+}
+</script>
+
+<style>
+.feed-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 2px solid #e1e8ed;
+}
+
+.feed-header h1 {
+    margin: 0;
+    font-size: 24px;
+    color: #14171a;
+}
+
+.date-navigation {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    align-items: flex-end;
+}
+
+.date-nav-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.date-picker {
+    padding: 8px 12px;
+    border: 1px solid #e1e8ed;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.date-info {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    font-size: 14px;
+    color: #657786;
+}
+
+.current-date {
+    font-weight: 600;
+    color: #14171a;
+}
+
+.date-badge {
+    background: #1da1f2;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.processing-status-message {
+    background: #d1ecf1;
+    border: 1px solid #bee5eb;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+    color: #0c5460;
+}
+
+.processing-status-message .status-info p {
+    margin: 8px 0;
+}
+
+.processing-status-message .status-info a {
+    color: #1da1f2;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.processing-status-message .status-info a:hover {
+    text-decoration: underline;
+}
+</style>
+{% endblock %}
+

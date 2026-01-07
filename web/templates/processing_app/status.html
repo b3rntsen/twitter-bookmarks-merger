@@ -1,0 +1,578 @@
+{% extends "base.html" %}
+{% load processing_tags %}
+
+{% block title %}Processing Status{% endblock %}
+
+{% block content %}
+<div class="container" hx-sse="connect:/processing/sse/stream/">
+    <h1>Content Processing Status</h1>
+    
+    <!-- Connection Status Indicator -->
+    <div id="connection-status-indicator" class="connection-status connected">● Connected</div>
+    
+    <!-- Worker Management (moved to top per US4) -->
+    <div class="worker-management" id="worker-management" 
+         hx-swap="outerHTML" 
+         hx-trigger="sse:worker_status from:body"
+         style="margin: 20px 0; padding: 20px; border: 1px solid #ddd; border-radius: 5px;">
+        <h2>Worker Management</h2>
+        <p>Control processing for each content type independently:</p>
+        <table class="table" style="width: 100%; margin-top: 15px;">
+            <thead>
+                <tr>
+                    <th>Content Type</th>
+                    <th>Status</th>
+                    <th>Jobs Today</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for content_type, status in content_type_status.items %}
+                <tr>
+                    <td><strong>{{ content_type|title }}</strong></td>
+                    <td>
+                        {% if status.enabled %}
+                            <span style="color: green;">✓ Enabled</span>
+                        {% else %}
+                            <span style="color: red;">✗ Disabled</span>
+                        {% endif %}
+                        {% if status.has_active %}
+                            <span style="color: orange;">(Active)</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        <small>
+                            Total: {{ status.total }} | 
+                            Running: {{ status.running }} | 
+                            Completed: {{ status.completed }} | 
+                            Failed: {{ status.failed }}
+                        </small>
+                    </td>
+                    <td>
+                        <form method="post" action="{% url 'processing:toggle_content_type' content_type %}" style="display: inline-block; margin-right: 5px;">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-sm {% if status.enabled %}btn-warning{% else %}btn-success{% endif %}">
+                                {% if status.enabled %}Disable{% else %}Enable{% endif %}
+                            </button>
+                        </form>
+                        {% if status.has_active %}
+                        <form method="post" action="{% url 'processing:stop_content_type' content_type %}" style="display: inline-block; margin-right: 5px;">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-sm btn-danger" onclick="return confirm('Stop all {{ content_type }} jobs?');">
+                                Stop
+                            </button>
+                        </form>
+                        {% else %}
+                        <form method="post" action="{% url 'processing:start_content_type' content_type %}" style="display: inline-block; margin-right: 5px;">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-sm btn-primary" {% if not status.enabled %}disabled title="Enable this content type first"{% endif %}>
+                                Start
+                            </button>
+                        </form>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    
+    <!-- Recent Processing Jobs (moved to top per US4) -->
+    <div class="job-history" id="recent-jobs">
+        <h2>Recent Processing Jobs</h2>
+        <div id="job-counts" 
+             hx-swap="outerHTML" 
+             hx-trigger="sse:job_counts from:body">
+            <div class="job-counts">
+                <h3>Job Status Summary</h3>
+                <ul>
+                    <li>Pending: <span id="count-pending">{{ job_counts.pending }}</span></li>
+                    <li>Running: <span id="count-running">{{ job_counts.running }}</span></li>
+                    <li>Completed: <span id="count-completed">{{ job_counts.completed }}</span></li>
+                    <li>Failed: <span id="count-failed">{{ job_counts.failed }}</span></li>
+                    <li>Retrying: <span id="count-retrying">{{ job_counts.retrying }}</span></li>
+                </ul>
+            </div>
+        </div>
+        <table id="jobs-table" 
+               hx-swap="outerHTML" 
+               hx-trigger="sse:job_update from:body">
+            <thead>
+                <tr>
+                    <th>Date</th>
+                    <th>Content Type</th>
+                    <th>Status</th>
+                    <th>Tweets Saved</th>
+                    <th>Items Processed</th>
+                    <th>Retry Count</th>
+                    <th>Completed At</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in latest_jobs %}
+                <tr id="job-row-{{ job.id }}">
+                    <td>{{ job.processing_date }}</td>
+                    <td>{{ job.content_type_display|default:job.content_type }}</td>
+                    <td>{{ job.status_display|default:job.status }}</td>
+                    <td><strong>{{ job_tweet_counts|get_item:job.id|default:"0" }}</strong></td>
+                    <td>{{ job.items_processed }}</td>
+                    <td>{{ job.retry_count }}/{{ job.max_retries }}</td>
+                    <td>{{ job.completed_at|default:"-" }}</td>
+                </tr>
+                {% if job.error_message %}
+                <tr>
+                    <td colspan="7" class="error">{{ job.error_message }}</td>
+                </tr>
+                {% endif %}
+                {% empty %}
+                <tr>
+                    <td colspan="7">No jobs found</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        
+        <!-- List Processing Status Widget (US5) -->
+        <details class="list-processing-widget" style="margin-top: 20px;">
+            <summary style="cursor: pointer; padding: 10px; background: #f7f9fa; border-radius: 4px; font-weight: 600;">
+                List Processing Status
+            </summary>
+            <div class="list-processing-content" style="padding: 15px; background: white; border: 1px solid #e1e8ed; border-radius: 4px; margin-top: 10px;">
+                {% if list_processing_status %}
+                    <table style="width: 100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="border-bottom: 2px solid #e1e8ed;">
+                                <th style="padding: 8px; text-align: left;">List Name</th>
+                                <th style="padding: 8px; text-align: left;">Tweet Count</th>
+                                <th style="padding: 8px; text-align: left;">Status</th>
+                                <th style="padding: 8px; text-align: left;">Last Processed</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for list_status in list_processing_status %}
+                            <tr style="border-bottom: 1px solid #e1e8ed;">
+                                <td style="padding: 8px;"><strong>{{ list_status.list_name }}</strong></td>
+                                <td style="padding: 8px;">{{ list_status.tweet_count }}</td>
+                                <td style="padding: 8px;">
+                                    {% if list_status.status == 'completed' %}
+                                        <span style="color: green;">✓ Completed</span>
+                                    {% elif list_status.status == 'failed' %}
+                                        <span style="color: red;">✗ Failed</span>
+                                    {% elif list_status.status == 'running' %}
+                                        <span style="color: orange;">🔄 Running</span>
+                                    {% else %}
+                                        {{ list_status.status|title }}
+                                    {% endif %}
+                                </td>
+                                <td style="padding: 8px;">{{ list_status.last_processed|date:"M d, Y H:i"|default:"Never" }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                {% else %}
+                    <p style="color: #657786; font-style: italic;">No list processing data available</p>
+                {% endif %}
+            </div>
+        </details>
+        
+        {% if latest_jobs.has_other_pages %}
+        <div class="pagination">
+            {% if latest_jobs.has_previous %}
+            <a href="?page={{ latest_jobs.previous_page_number }}">Previous</a>
+            {% endif %}
+            <span>Page {{ latest_jobs.number }} of {{ latest_jobs.paginator.num_pages }}</span>
+            {% if latest_jobs.has_next %}
+            <a href="?page={{ latest_jobs.next_page_number }}">Next</a>
+            {% endif %}
+        </div>
+        {% endif %}
+    </div>
+    
+    <!-- Global Actions -->
+    <div class="action-buttons" style="margin: 20px 0;">
+        <h2>Global Actions</h2>
+        {% if active_jobs %}
+        <form method="post" action="{% url 'processing:kill_all_jobs' %}" style="display: inline-block; margin-right: 10px;">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-warning" onclick="return confirm('Are you sure you want to cancel all running and pending jobs?');">
+                ⛔ Kill All Jobs
+            </button>
+        </form>
+        {% endif %}
+        {% if show_force_start_button %}
+        <form method="post" action="{% url 'processing:force_start_all_jobs' %}" style="display: inline-block; margin-right: 10px;">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary" onclick="return confirm('This will reset and restart ALL jobs for today (including completed ones). Continue?');">
+                🔄 Force Start All Jobs
+            </button>
+        </form>
+        {% endif %}
+        {% if today_jobs_failed > 0 %}
+        <form method="post" action="{% url 'processing:restart_failed_jobs' %}" style="display: inline-block; margin-right: 10px;">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary">
+                🔁 Restart Failed Jobs ({{ today_jobs_failed }})
+            </button>
+        </form>
+        {% endif %}
+        <form method="post" action="{% url 'processing:delete_all_twitter_content' %}" style="display: inline-block; margin-right: 10px;" id="deleteAllForm">
+            {% csrf_token %}
+            <button type="button" class="btn btn-danger" onclick="confirmDeleteAll()">
+                🗑️ Delete All Twitter Content
+            </button>
+            <input type="hidden" name="confirm" id="confirmInput" value="">
+        </form>
+    </div>
+    
+    <!-- Active Jobs Alert -->
+    {% if active_jobs %}
+    <div class="active-jobs-alert" id="active-jobs-alert">
+        <h2>🔄 Active Processing</h2>
+        <p>There are currently jobs running or pending. Content is being processed now.</p>
+    </div>
+    {% else %}
+    <div class="no-active-jobs">
+        <h2>No Active Jobs</h2>
+        {% if show_trigger_button %}
+        {% if today_jobs_all_failed %}
+        <p>All jobs for today ({{ today|date:"F d, Y" }}) have failed or were cancelled.</p>
+        <p>You can retry processing today's content.</p>
+        {% else %}
+        <p>No jobs have been scheduled for today ({{ today|date:"F d, Y" }}).</p>
+        {% endif %}
+        <form method="post" action="{% url 'processing:trigger_today_jobs' %}" style="display: inline;">
+            {% csrf_token %}
+            <button type="submit" class="btn btn-primary">Start Processing Today's Content</button>
+        </form>
+        <p class="help-text">This will create and immediately queue jobs for bookmarks, curated feed, and lists.</p>
+        {% elif today_jobs_complete < today_jobs_total %}
+        <p>Some jobs for today are not yet complete ({{ today_jobs_complete }}/{{ today_jobs_total }} completed).</p>
+        <p>Jobs are being processed automatically. Check back in a few minutes.</p>
+        {% else %}
+        <p>All jobs for today have been completed!</p>
+        {% endif %}
+    </div>
+    {% endif %}
+    
+    <!-- Schedule Configuration (moved down per US4) -->
+    {% if processing_schedule %}
+    <div class="schedule-info">
+        <h2>Schedule Configuration</h2>
+        <p><strong>Processing Time:</strong> {{ processing_schedule.processing_time }} UTC</p>
+        <p><strong>Timezone:</strong> {{ processing_schedule.timezone }}</p>
+        <p><strong>Enabled:</strong> {{ processing_schedule.enabled|yesno:"Yes,No" }}</p>
+        <p><strong>Content Types:</strong>
+            {% if processing_schedule.process_bookmarks %}Bookmarks{% endif %}
+            {% if processing_schedule.process_curated_feed %}, Curated Feed{% endif %}
+            {% if processing_schedule.process_lists %}, Lists{% endif %}
+        </p>
+        {% if next_processing_time %}
+        <p><strong>Next Processing:</strong> {{ next_processing_time|date:"F d, Y g:i A" }} UTC</p>
+        {% endif %}
+        {% if estimated_processing_time %}
+        <p><strong>Estimated Processing Time:</strong> ~{{ estimated_processing_time }} minutes</p>
+        {% endif %}
+    </div>
+    {% endif %}
+    
+    <!-- Latest Snapshot (moved down per US4) -->
+    {% if latest_snapshot %}
+    <div class="latest-snapshot">
+        <h2>Latest Processing Snapshot</h2>
+        <p><strong>Date:</strong> {{ latest_snapshot.processing_date }}</p>
+        <p><strong>Bookmarks:</strong> {{ latest_snapshot.bookmark_count }}</p>
+        <p><strong>Curated Feed:</strong> {{ latest_snapshot.curated_feed_count }}</p>
+        <p><strong>Lists:</strong> {{ latest_snapshot.list_count }}</p>
+        <p><strong>Total Tweets:</strong> {{ latest_snapshot.total_tweet_count }}</p>
+        <p><strong>All Jobs Completed:</strong> {{ latest_snapshot.all_jobs_completed|yesno:"Yes,No" }}</p>
+        {% if latest_snapshot.last_processed_at %}
+        <p><strong>Last Processed:</strong> {{ latest_snapshot.last_processed_at }}</p>
+        {% endif %}
+    </div>
+    {% endif %}
+    
+    <!-- Recent Snapshots (moved down per US4) -->
+    <div class="recent-snapshots">
+        <h2>Recent Snapshots (Last 7 Days)</h2>
+        <ul>
+            {% for snapshot in recent_snapshots %}
+            <li>
+                {{ snapshot.processing_date }}: 
+                {{ snapshot.total_tweet_count }} tweets
+                ({{ snapshot.all_jobs_completed|yesno:"Complete,In Progress" }})
+            </li>
+            {% empty %}
+            <li>No snapshots available</li>
+            {% endfor %}
+        </ul>
+    </div>
+</div>
+
+<style>
+.btn {
+    display: inline-block;
+    padding: 10px 20px;
+    background: #1da1f2;
+    color: white;
+    text-decoration: none;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    transition: background 0.2s;
+}
+
+.btn:hover {
+    background: #1a91da;
+}
+
+.btn-primary {
+    background: #1da1f2;
+}
+
+.no-active-jobs {
+    background: #f7f9fa;
+    border: 1px solid #e1e8ed;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+}
+
+.no-active-jobs h2 {
+    margin-top: 0;
+    color: #14171a;
+}
+
+.help-text {
+    color: #657786;
+    font-size: 14px;
+    margin-top: 10px;
+    font-style: italic;
+}
+
+.active-jobs-alert {
+    background: #d1ecf1;
+    border: 1px solid #bee5eb;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+    color: #0c5460;
+}
+
+.schedule-info, .job-counts, .latest-snapshot, .recent-snapshots, .job-history {
+    background: white;
+    border: 1px solid #e1e8ed;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+}
+
+.job-history table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.job-history th, .job-history td {
+    padding: 10px;
+    text-align: left;
+    border-bottom: 1px solid #e1e8ed;
+}
+
+.job-history th {
+    background: #f7f9fa;
+    font-weight: 600;
+}
+
+.job-history .error {
+    color: #e0245e;
+    font-size: 12px;
+}
+
+.btn-warning {
+    background: #ffc107;
+    color: #000;
+}
+
+.btn-warning:hover {
+    background: #e0a800;
+}
+
+.btn-danger {
+    background: #dc3545;
+    color: white;
+}
+
+.btn-danger:hover {
+    background: #c82333;
+}
+
+.action-buttons {
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 8px;
+    padding: 20px;
+}
+
+.action-buttons h2 {
+    margin-top: 0;
+    color: #856404;
+}
+
+.list-processing-widget {
+    margin-top: 15px;
+}
+
+.list-processing-widget summary {
+    user-select: none;
+}
+
+.list-processing-widget summary:hover {
+    background: #e1e8ed !important;
+}
+
+/* Connection status indicator - ensure it's always visible */
+#connection-status-indicator {
+    position: fixed;
+    top: 10px;
+    right: 10px;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 500;
+    z-index: 1000;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+#connection-status-indicator.connected {
+    background: #4caf50;
+    color: white;
+}
+
+#connection-status-indicator.disconnected {
+    background: #f44336;
+    color: white;
+}
+
+#connection-status-indicator.reconnecting {
+    background: #ff9800;
+    color: white;
+}
+</style>
+
+<script>
+// Ensure connection status indicator is visible and initialized
+(function() {
+    const indicator = document.getElementById('connection-status-indicator');
+    if (indicator) {
+        // Ensure it's visible with connected state by default
+        indicator.className = 'connection-status connected';
+        indicator.textContent = '● Connected';
+    }
+})();
+
+function confirmDeleteAll() {
+    const confirmText = prompt(
+        '⚠️ WARNING: This will permanently delete ALL Twitter content:\n\n' +
+        '- All tweets and bookmarks\n' +
+        '- All curated feeds and categories\n' +
+        '- All Twitter lists and events\n' +
+        '- All processing jobs and snapshots\n\n' +
+        'This action CANNOT be undone!\n\n' +
+        'Type "delete" (without quotes) to confirm:'
+    );
+    
+    if (confirmText === 'delete') {
+        document.getElementById('confirmInput').value = 'delete';
+        document.getElementById('deleteAllForm').submit();
+    } else {
+        alert('Deletion cancelled. Content was not deleted.');
+    }
+}
+
+// Handle htmx SSE events for real-time updates
+if (typeof htmx !== 'undefined') {
+    // Listen for SSE events and apply batching
+    document.body.addEventListener('htmx:sseMessage', function(event) {
+        try {
+            const data = JSON.parse(event.detail.message);
+            
+            // Batch updates using UpdateBatcher
+            if (data.type === 'job_counts') {
+                updateBatcher.queueUpdate('job-counts', function() {
+                    const counts = data.data;
+                    const pendingEl = document.getElementById('count-pending');
+                    const runningEl = document.getElementById('count-running');
+                    const completedEl = document.getElementById('count-completed');
+                    const failedEl = document.getElementById('count-failed');
+                    const retryingEl = document.getElementById('count-retrying');
+                    
+                    if (pendingEl) {
+                        applyUpdateWithFeedback(pendingEl.parentElement, `Pending: ${counts.pending}`);
+                    }
+                    if (runningEl) {
+                        applyUpdateWithFeedback(runningEl.parentElement, `Running: ${counts.running}`);
+                    }
+                    if (completedEl) {
+                        applyUpdateWithFeedback(completedEl.parentElement, `Completed: ${counts.completed}`);
+                    }
+                    if (failedEl) {
+                        applyUpdateWithFeedback(failedEl.parentElement, `Failed: ${counts.failed}`);
+                    }
+                    if (retryingEl) {
+                        applyUpdateWithFeedback(retryingEl.parentElement, `Retrying: ${counts.retrying}`);
+                    }
+                });
+            } else if (data.type === 'job_update') {
+                updateBatcher.queueUpdate(`job-${data.data.job_id}`, function() {
+                    // Update individual job row if it exists
+                    const jobRow = document.getElementById(`job-row-${data.data.job_id}`);
+                    if (jobRow) {
+                        // Update status cell
+                        const statusCell = jobRow.querySelector('td:nth-child(3)');
+                        if (statusCell) {
+                            const statusText = data.data.status.charAt(0).toUpperCase() + data.data.status.slice(1);
+                            applyUpdateWithFeedback(statusCell, statusText);
+                        }
+                        // Update items processed
+                        const itemsCell = jobRow.querySelector('td:nth-child(5)');
+                        if (itemsCell) {
+                            applyUpdateWithFeedback(itemsCell, data.data.items_processed);
+                        }
+                    }
+                });
+            } else if (data.type === 'worker_status') {
+                updateBatcher.queueUpdate('worker-management', function() {
+                    // Worker status updates will trigger htmx swap automatically
+                    // Visual feedback applied via CSS class
+                    const workerSection = document.getElementById('worker-management');
+                    if (workerSection) {
+                        workerSection.classList.add('update-highlight');
+                        setTimeout(() => {
+                            workerSection.classList.remove('update-highlight');
+                        }, 500);
+                    }
+                });
+            } else if (data.type === 'tweet_counts') {
+                updateBatcher.queueUpdate('tweet-counts', function() {
+                    // Update tweet count displays
+                    const counts = data.data;
+                    // Find and update tweet count elements
+                    const tweetCountElements = document.querySelectorAll('[id^="tweet-count-"]');
+                    tweetCountElements.forEach(function(el) {
+                        // This would need to be more specific based on actual implementation
+                        // For now, just trigger visual feedback
+                        el.classList.add('update-highlight');
+                        setTimeout(() => {
+                            el.classList.remove('update-highlight');
+                        }, 500);
+                    });
+                });
+            }
+        } catch (error) {
+            console.error('Error processing SSE event:', error);
+        }
+    });
+}
+</script>
+{% endblock %}

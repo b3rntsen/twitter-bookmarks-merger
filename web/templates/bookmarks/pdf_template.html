@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Bookmark: {{ bookmark.tweet_id }}</title>
+</head>
+<body>
+    <div class="bookmark-header">
+        <div class="author-name">@{{ bookmark.author_username }}</div>
+        <div class="bookmark-date">{{ bookmark.created_at|date:"F d, Y at g:i A" }}</div>
+    </div>
+    
+    <div class="bookmark-content">
+        {% autoescape off %}
+        {{ bookmark.text_content|urlize|linebreaks }}
+        {% endautoescape %}
+    </div>
+    
+    {% if tweet_url %}
+        <div class="tweet-link">
+            <a href="{{ tweet_url }}">View original tweet</a>
+        </div>
+    {% endif %}
+    
+    <div class="bookmark-metrics">
+        <span>❤️ {{ bookmark.like_count }} likes</span>
+        <span>🔄 {{ bookmark.retweet_count }} retweets</span>
+        <span>💬 {{ bookmark.reply_count }} replies</span>
+    </div>
+    
+    {% if bookmark.media.all %}
+        <div class="media-section">
+            <h3>Media</h3>
+            {% for item in bookmark.media.all %}
+                <div class="media-item">
+                    {% if item.media_type == 'image' or item.media_type == 'gif' %}
+                        {% if tweet_url %}
+                            <a href="{{ tweet_url }}">
+                                <img src="file://{{ MEDIA_ROOT }}/{{ item.file_path }}" alt="Media">
+                            </a>
+                        {% else %}
+                            <img src="file://{{ MEDIA_ROOT }}/{{ item.file_path }}" alt="Media">
+                        {% endif %}
+                        {% if item.original_url %}
+                            <p class="media-link"><a href="{{ item.original_url }}">View original image</a></p>
+                        {% endif %}
+                    {% elif item.media_type == 'video' %}
+                        {% if item.thumbnail_path %}
+                            {% if tweet_url %}
+                                <a href="{{ tweet_url }}">
+                                    <img src="file://{{ MEDIA_ROOT }}/{{ item.thumbnail_path }}" alt="Video thumbnail" class="video-thumbnail">
+                                </a>
+                            {% else %}
+                                <img src="file://{{ MEDIA_ROOT }}/{{ item.thumbnail_path }}" alt="Video thumbnail" class="video-thumbnail">
+                            {% endif %}
+                        {% endif %}
+                        <p class="video-link">
+                            {% if item.original_url %}
+                                <a href="{{ item.original_url }}">View original video</a> | 
+                            {% endif %}
+                            Video file: {{ item.file_path }}
+                        </p>
+                    {% endif %}
+                </div>
+            {% endfor %}
+        </div>
+    {% endif %}
+    
+    {% if thread_tweets|length > 1 %}
+        <div class="thread-section">
+            <h3>Thread</h3>
+            {% for thread_tweet in thread_tweets %}
+                {% if thread_tweet.tweet_id != bookmark.tweet_id %}
+                    <div class="thread-tweet">
+                        <div class="thread-header">
+                            <strong>@{{ thread_tweet.author_username }}</strong> - {{ thread_tweet.created_at|date:"M d, Y" }}
+                        </div>
+                        <div class="thread-content">
+                            {{ thread_tweet.text_content|linebreaks }}
+                        </div>
+                    </div>
+                {% endif %}
+            {% endfor %}
+        </div>
+    {% endif %}
+</body>
+</html>
+

@@ -1,0 +1,501 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}{{ twitter_list.list_name }} Events - Twitter Bookmarks{% endblock %}
+
+{% block breadcrumb_items %}
+<li><a href="{% url 'lists:list_selection' %}">Lists</a></li>
+<li><span>{{ twitter_list.list_name }}</span></li>
+{% endblock %}
+
+{% block content %}
+<div class="events-container">
+    <div class="events-header">
+        <h1>{{ twitter_list.list_name }} - Daily Events</h1>
+        <div class="events-actions">
+            <div class="date-navigation">
+                {% if date_nav %}
+                    <div class="date-nav-controls">
+                        {% if date_nav.has_previous %}
+                            <a href="?date={{ date_nav.previous_date|date:'Y-m-d' }}" class="btn btn-sm">← Previous</a>
+                        {% endif %}
+                        <input 
+                            type="date" 
+                            id="datePicker" 
+                            value="{{ event_date|date:'Y-m-d' }}"
+                            onchange="changeDate(this.value)"
+                            class="date-input"
+                        >
+                        {% if date_nav.has_next %}
+                            <a href="?date={{ date_nav.next_date|date:'Y-m-d' }}" class="btn btn-sm">Next →</a>
+                        {% endif %}
+                        {% if not date_nav.is_today %}
+                            <a href="?" class="btn btn-sm">Today</a>
+                        {% endif %}
+                    </div>
+                    <div class="date-info">
+                        <span class="current-date">{{ event_date|date:"F d, Y" }}</span>
+                        {% if date_nav.is_today %}
+                            <span class="date-badge">Today</span>
+                        {% endif %}
+                    </div>
+                {% endif %}
+            </div>
+            <a href="{% url 'lists:list_selection' %}" class="btn btn-sm">Back to Lists</a>
+        </div>
+    </div>
+    
+    {% if not events %}
+        <div class="processing-status-message">
+            {% if date_nav.is_today %}
+                <div class="status-info">
+                    {% if processing_status.is_processing %}
+                        <p><strong>🔄 Content is being processed right now.</strong></p>
+                        <p>List tweets and events are currently being generated. Please check back in a few minutes.</p>
+                    {% else %}
+                        <p><strong>Content is processed automatically.</strong></p>
+                        <p>List tweets are fetched and events are generated daily. If no events appear, processing may still be in progress.</p>
+                        {% if processing_status.next_processing_time %}
+                            <p><strong>Next update:</strong> {{ processing_status.next_processing_time|date:"F d, Y g:i A" }} UTC</p>
+                        {% endif %}
+                        {% if processing_status.estimated_processing_time %}
+                            <p><strong>Estimated processing time:</strong> ~{{ processing_status.estimated_processing_time }} minutes</p>
+                        {% endif %}
+                    {% endif %}
+                    <p><a href="{% url 'processing:processing_status' %}">View detailed processing status</a></p>
+                </div>
+            {% else %}
+                <div class="status-info">
+                    <p>No events found for {{ event_date|date:"F d, Y" }}.</p>
+                    <p>Content is processed daily. This date may not have had any events, or processing may not have completed yet.</p>
+                </div>
+            {% endif %}
+        </div>
+    {% endif %}
+    
+    <div class="two-pane-layout">
+        <!-- Left Pane: Events List -->
+        <div class="events-pane">
+            <h2>Events ({{ events|length }})</h2>
+            {% if events %}
+                <div class="events-list">
+                    {% for event in events %}
+                        <div 
+                            class="event-item {% if selected_event and event.id == selected_event.id %}active{% endif %}"
+                            onclick="selectEvent({{ event.id }})"
+                        >
+                            <div class="event-header">
+                                <h3>{{ event.headline|truncatewords:10 }}</h3>
+                                <span class="tweet-count">{{ event.tweet_count }} tweets</span>
+                            </div>
+                            <div class="event-keywords">
+                                {% for keyword in event.keywords|slice:":5" %}
+                                    <span class="keyword-tag">{{ keyword }}</span>
+                                {% endfor %}
+                            </div>
+                            <div class="event-date">
+                                {{ event.event_date|date:"M d, Y" }}
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+            {% endif %}
+        </div>
+        
+        <!-- Right Pane: Event Summary -->
+        <div class="summary-pane">
+            {% if selected_event %}
+                <div class="event-summary">
+                    <h2>{{ selected_event.headline }}</h2>
+                    <div class="event-meta">
+                        <span class="event-date">{{ selected_event.event_date|date:"F d, Y" }}</span>
+                        <span class="tweet-count-badge">{{ selected_event.tweet_count }} tweets</span>
+                    </div>
+                    
+                    <div class="summary-content">
+                        <h3>Summary</h3>
+                        <p>{{ selected_event.summary|linebreaks }}</p>
+                    </div>
+                    
+                    <div class="keywords-section">
+                        <h3>Keywords</h3>
+                        <div class="keywords-list">
+                            {% for keyword in selected_event.keywords %}
+                                <span class="keyword-tag">{{ keyword }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    
+                    <div class="tweets-section">
+                        <h3>Related Tweets ({{ event_tweets|length }})</h3>
+                        <div class="tweets-list">
+                            {% for event_tweet in event_tweets %}
+                                {% with tweet=event_tweet.list_tweet.tweet %}
+                                <div class="tweet-reference">
+                                    <div class="tweet-author">
+                                        <strong>@{{ tweet.author_username }}</strong>
+                                        {% if tweet.author_display_name %}
+                                            <span class="display-name">{{ tweet.author_display_name }}</span>
+                                        {% endif %}
+                                    </div>
+                                    <div class="tweet-text">
+                                        {{ tweet.text_content|truncatewords:30 }}
+                                    </div>
+                                    <div class="tweet-actions">
+                                        <a 
+                                            href="https://x.com/{{ tweet.author_username }}/status/{{ tweet.tweet_id }}" 
+                                            target="_blank"
+                                            class="tweet-link"
+                                        >
+                                            View on Twitter →
+                                        </a>
+                                        <span class="tweet-date">{{ tweet.created_at|date:"M d, Y H:i" }}</span>
+                                    </div>
+                                </div>
+                                {% endwith %}
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            {% else %}
+                <div class="empty-state">
+                    <p>Select an event from the left pane to view its summary.</p>
+                </div>
+            {% endif %}
+        </div>
+    </div>
+</div>
+
+<script>
+function changeDate(dateStr) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('date', dateStr);
+    window.location.href = url.toString();
+}
+
+function selectEvent(eventId) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('event', eventId);
+    window.location.href = url.toString();
+}
+
+// Date navigation - sync and generate buttons removed (automatic processing)
+</script>
+
+<style>
+.events-container {
+    max-width: 100%;
+    margin: 0;
+    padding: 20px;
+}
+
+.events-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 15px;
+}
+
+.events-header h1 {
+    margin: 0;
+}
+
+.events-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.date-input {
+    padding: 8px 12px;
+    border: 1px solid #e1e8ed;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.date-navigation {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    align-items: flex-end;
+}
+
+.date-nav-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.date-info {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    font-size: 14px;
+    color: #657786;
+}
+
+.current-date {
+    font-weight: 600;
+    color: #14171a;
+}
+
+.date-badge {
+    background: #1da1f2;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.processing-status-message {
+    background: #d1ecf1;
+    border: 1px solid #bee5eb;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+    color: #0c5460;
+}
+
+.processing-status-message .status-info p {
+    margin: 8px 0;
+}
+
+.processing-status-message .status-info a {
+    color: #1da1f2;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.processing-status-message .status-info a:hover {
+    text-decoration: underline;
+}
+
+.two-pane-layout {
+    display: grid;
+    grid-template-columns: 350px 1fr;
+    gap: 20px;
+    height: calc(100vh - 200px);
+    min-height: 600px;
+}
+
+.events-pane {
+    border: 1px solid #e1e8ed;
+    border-radius: 8px;
+    padding: 20px;
+    background: white;
+    overflow-y: auto;
+}
+
+.events-pane h2 {
+    margin: 0 0 15px 0;
+    font-size: 1.2em;
+    color: #14171a;
+}
+
+.events-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+
+.event-item {
+    border: 1px solid #e1e8ed;
+    border-radius: 8px;
+    padding: 15px;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: white;
+}
+
+.event-item:hover {
+    background: #f7f9fa;
+    border-color: #1da1f2;
+}
+
+.event-item.active {
+    background: #e8f5fe;
+    border-color: #1da1f2;
+    box-shadow: 0 2px 4px rgba(29, 161, 242, 0.2);
+}
+
+.event-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: start;
+    margin-bottom: 10px;
+}
+
+.event-header h3 {
+    margin: 0;
+    font-size: 1em;
+    color: #14171a;
+    flex: 1;
+}
+
+.tweet-count {
+    font-size: 0.85em;
+    color: #657786;
+    background: #f7f9fa;
+    padding: 2px 8px;
+    border-radius: 12px;
+    white-space: nowrap;
+}
+
+.event-keywords {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    margin-bottom: 10px;
+}
+
+.keyword-tag {
+    font-size: 0.75em;
+    color: #1da1f2;
+    background: #e8f5fe;
+    padding: 2px 8px;
+    border-radius: 12px;
+}
+
+.event-date {
+    font-size: 0.85em;
+    color: #657786;
+}
+
+.summary-pane {
+    border: 1px solid #e1e8ed;
+    border-radius: 8px;
+    padding: 30px;
+    background: white;
+    overflow-y: auto;
+}
+
+.event-summary h2 {
+    margin: 0 0 15px 0;
+    font-size: 1.5em;
+    color: #14171a;
+}
+
+.event-meta {
+    display: flex;
+    gap: 15px;
+    margin-bottom: 25px;
+    color: #657786;
+    font-size: 0.9em;
+}
+
+.tweet-count-badge {
+    background: #1da1f2;
+    color: white;
+    padding: 4px 12px;
+    border-radius: 12px;
+    font-size: 0.85em;
+}
+
+.summary-content {
+    margin-bottom: 30px;
+}
+
+.summary-content h3 {
+    font-size: 1.1em;
+    margin: 0 0 10px 0;
+    color: #14171a;
+}
+
+.summary-content p {
+    line-height: 1.6;
+    color: #14171a;
+}
+
+.keywords-section {
+    margin-bottom: 30px;
+}
+
+.keywords-section h3 {
+    font-size: 1.1em;
+    margin: 0 0 10px 0;
+    color: #14171a;
+}
+
+.keywords-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.tweets-section h3 {
+    font-size: 1.1em;
+    margin: 0 0 15px 0;
+    color: #14171a;
+}
+
+.tweets-list {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.tweet-reference {
+    border: 1px solid #e1e8ed;
+    border-radius: 8px;
+    padding: 15px;
+    background: #f7f9fa;
+}
+
+.tweet-author {
+    margin-bottom: 8px;
+    color: #14171a;
+}
+
+.tweet-author .display-name {
+    color: #657786;
+    margin-left: 5px;
+}
+
+.tweet-text {
+    margin-bottom: 10px;
+    color: #14171a;
+    line-height: 1.5;
+}
+
+.tweet-actions {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.85em;
+}
+
+.tweet-link {
+    color: #1da1f2;
+    text-decoration: none;
+}
+
+.tweet-link:hover {
+    text-decoration: underline;
+}
+
+.tweet-date {
+    color: #657786;
+}
+
+.empty-state {
+    text-align: center;
+    padding: 40px;
+    color: #657786;
+}
+
+@media (max-width: 1024px) {
+    .two-pane-layout {
+        grid-template-columns: 1fr;
+        height: auto;
+    }
+    
+    .events-pane {
+        max-height: 400px;
+    }
+}
+</style>
+{% endblock %}

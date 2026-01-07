@@ -1,0 +1,218 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Fetch Curated Feed - Twitter Bookmarks{% endblock %}
+
+{% block breadcrumb_items %}
+<li><a href="{% url 'curated_feed' %}">Curated Feed</a></li>
+<li><span>Fetch New Feed</span></li>
+{% endblock %}
+
+{% block content %}
+<div class="fetch-feed-container">
+    <div class="fetch-header">
+        <h1>Fetch Curated Feed</h1>
+        <p class="description">
+            Fetch tweets from your home timeline and automatically categorize them using AI.
+        </p>
+    </div>
+    
+    <div class="fetch-form-container">
+        <form method="post" class="fetch-form">
+            {% csrf_token %}
+            
+            <div class="form-group">
+                <label for="num_tweets">Number of tweets to fetch:</label>
+                <input 
+                    type="number" 
+                    id="num_tweets" 
+                    name="num_tweets" 
+                    value="{{ default_num_tweets }}" 
+                    min="1" 
+                    max="500"
+                    class="form-control"
+                    required
+                >
+                <small class="form-help">
+                    Enter the number of tweets to fetch from your home timeline (default: 100, max: 500).
+                    More tweets will take longer to process but provide better categorization.
+                </small>
+            </div>
+            
+            <div class="form-actions">
+                <button type="submit" class="btn btn-primary">Start Fetching</button>
+                <a href="{% url 'curated_feed' %}" class="btn btn-secondary">Cancel</a>
+            </div>
+        </form>
+        
+        <div class="info-box">
+            <h3>How it works:</h3>
+            <ol>
+                <li><strong>Clean:</strong> Any existing curated feeds will be automatically deleted first</li>
+                <li>We'll fetch tweets from your home timeline (the "For You" feed)</li>
+                <li>Each tweet will be analyzed and categorized by topic using AI</li>
+                <li>Categories will be created based on themes and content</li>
+                <li>A summary will be generated for each category with attribution to authors</li>
+                <li>The process may take a few minutes depending on the number of tweets</li>
+            </ol>
+            
+            <div class="warning-note">
+                <strong>Note:</strong> This will replace any existing curated feed. The old feed will be automatically deleted before fetching new tweets.
+            </div>
+            
+            <div class="note">
+                <strong>Note:</strong> Make sure you have set your <code>ANTHROPIC_API_KEY</code> environment variable 
+                for the AI categorization to work.
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+.fetch-feed-container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.fetch-header {
+    margin-bottom: 30px;
+}
+
+.fetch-header h1 {
+    margin-bottom: 10px;
+    color: #14171a;
+}
+
+.description {
+    color: #657786;
+    font-size: 16px;
+    line-height: 1.5;
+}
+
+.fetch-form-container {
+    background: white;
+    border-radius: 8px;
+    padding: 30px;
+    border: 1px solid #e1e8ed;
+}
+
+.form-group {
+    margin-bottom: 25px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 600;
+    color: #14171a;
+}
+
+.form-control {
+    width: 100%;
+    padding: 12px;
+    border: 2px solid #e1e8ed;
+    border-radius: 8px;
+    font-size: 16px;
+    transition: border-color 0.2s;
+}
+
+.form-control:focus {
+    outline: none;
+    border-color: #1da1f2;
+}
+
+.form-help {
+    display: block;
+    margin-top: 8px;
+    color: #657786;
+    font-size: 14px;
+    line-height: 1.4;
+}
+
+.form-actions {
+    display: flex;
+    gap: 15px;
+    margin-top: 30px;
+}
+
+.btn {
+    display: inline-block;
+    padding: 12px 24px;
+    border-radius: 20px;
+    text-decoration: none;
+    font-weight: 600;
+    transition: all 0.2s;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+}
+
+.btn-primary {
+    background: #1da1f2;
+    color: white;
+}
+
+.btn-primary:hover {
+    background: #1a91da;
+}
+
+.btn-secondary {
+    background: #e1e8ed;
+    color: #14171a;
+}
+
+.btn-secondary:hover {
+    background: #ccd6dd;
+}
+
+.info-box {
+    margin-top: 40px;
+    padding: 20px;
+    background: #f7f9fa;
+    border-radius: 8px;
+}
+
+.info-box h3 {
+    margin-top: 0;
+    margin-bottom: 15px;
+    color: #14171a;
+}
+
+.info-box ol {
+    margin: 0;
+    padding-left: 20px;
+    color: #14171a;
+    line-height: 1.8;
+}
+
+.info-box li {
+    margin-bottom: 8px;
+}
+
+.note {
+    margin-top: 20px;
+    padding: 15px;
+    background: #fff3cd;
+    border-left: 4px solid #ffc107;
+    border-radius: 4px;
+    color: #856404;
+}
+
+.note code {
+    background: rgba(0, 0, 0, 0.1);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: monospace;
+}
+
+.warning-note {
+    margin-top: 20px;
+    padding: 15px;
+    background: #fff3cd;
+    border-left: 4px solid #ffc107;
+    border-radius: 4px;
+    color: #856404;
+}
+</style>
+{% endblock %}

@@ -1,0 +1,139 @@
+{% comment %}
+Reusable tweet card component
+Usage: {% include 'bookmarks/tweet_card.html' with tweet=bookmark show_actions=True %}
+Parameters:
+  - tweet: The Tweet model instance
+  - show_actions: Whether to show action buttons (default: True)
+  - show_media: Whether to show media (default: True)
+  - show_engagement: Whether to show engagement metrics (default: True)
+{% endcomment %}
+{% load static %}
+
+{% with media=tweet.media.all %}
+<article class="tweet-card feed-tweet">
+    {% if show_actions|default:True %}
+    <div class="tweet-actions-bar">
+        {% if tweet.raw_data.url %}
+            <a href="{% if tweet.raw_data.url|slice:':4' == 'http' %}{{ tweet.raw_data.url }}{% else %}https://x.com{{ tweet.raw_data.url }}{% endif %}" target="_blank" class="action-link twitter-icon" title="Open on Twitter/X">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M23.953 4.57a10 10 0 01-2.825.775 4.958 4.958 0 002.163-2.723c-.951.555-2.005.959-3.127 1.184a4.92 4.92 0 00-8.384 4.482C7.69 8.095 4.067 6.13 1.64 3.162a4.822 4.822 0 00-.666 2.475c0 1.71.87 3.213 2.188 4.096a4.904 4.904 0 01-2.228-.616v.06a4.923 4.923 0 003.946 4.827 4.996 4.996 0 01-2.212.085 4.936 4.936 0 004.604 3.417 9.867 9.867 0 01-6.102 2.105c-.39 0-.779-.023-1.17-.067a13.995 13.995 0 007.557 2.209c9.053 0 13.998-7.496 13.998-13.985 0-.21 0-.42-.015-.63A9.935 9.935 0 0024 4.59z"/>
+                </svg>
+            </a>
+        {% endif %}
+        {% if tweet.is_bookmark %}
+            <a href="{% url 'bookmark_detail' tweet.tweet_id %}" class="action-link" title="View">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                    <circle cx="12" cy="12" r="3"></circle>
+                </svg>
+                <span>View</span>
+            </a>
+            {% if tweet.html_content_sanitized %}
+                <a href="{% url 'view_html' tweet.tweet_id %}" class="action-link" title="View HTML">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="16 18 22 12 16 6"></polyline>
+                        <polyline points="8 6 2 12 8 18"></polyline>
+                    </svg>
+                    <span>View HTML</span>
+                </a>
+            {% endif %}
+            <button onclick="previewPDF('{% url 'preview_pdf' tweet.tweet_id %}')" class="action-link" title="Preview PDF">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                    <polyline points="14 2 14 8 20 8"></polyline>
+                    <line x1="16" y1="13" x2="8" y2="13"></line>
+                    <line x1="16" y1="17" x2="8" y2="17"></line>
+                    <polyline points="10 9 9 9 8 9"></polyline>
+                </svg>
+                <span>Preview PDF</span>
+            </button>
+            <a href="{% url 'download_pdf' tweet.tweet_id %}" class="action-link" title="Download PDF">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                    <polyline points="7 10 12 15 17 10"></polyline>
+                    <line x1="12" y1="15" x2="12" y2="3"></line>
+                </svg>
+                <span>Download PDF</span>
+            </a>
+            <a href="{% url 'delete_bookmark' tweet.tweet_id %}" class="action-link danger" title="Delete" onclick="return confirm('Delete this bookmark?');">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+                <span>Delete</span>
+            </a>
+        {% endif %}
+    </div>
+    {% endif %}
+    
+    <div class="tweet-header">
+        <div class="tweet-author">
+            <div class="author-avatar">
+                {% if tweet.author_profile_image_url %}
+                    <img src="{{ tweet.author_profile_image_url }}" alt="{{ tweet.author_display_name|default:tweet.author_username }}" class="profile-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                    <div class="avatar-placeholder" style="display: none;">{{ tweet.author_display_name|default:tweet.author_username|first|upper }}</div>
+                {% else %}
+                    <div class="avatar-placeholder">{{ tweet.author_display_name|default:tweet.author_username|first|upper }}</div>
+                {% endif %}
+            </div>
+            <div class="author-info">
+                <div class="author-name">{{ tweet.author_display_name|default:tweet.author_username }}</div>
+                <div class="author-handle">@{{ tweet.author_username }}</div>
+            </div>
+        </div>
+        <div class="tweet-timestamp">
+            {% if tweet.raw_data.url %}
+                <a href="{% if tweet.raw_data.url|slice:':4' == 'http' %}{{ tweet.raw_data.url }}{% else %}https://x.com{{ tweet.raw_data.url }}{% endif %}" target="_blank" class="tweet-link">
+                    <time datetime="{{ tweet.created_at|date:'c' }}">{{ tweet.created_at|timesince }} ago</time>
+                </a>
+            {% else %}
+                <time datetime="{{ tweet.created_at|date:'c' }}">{{ tweet.created_at|timesince }} ago</time>
+            {% endif %}
+        </div>
+    </div>
+    
+    <div class="tweet-content">
+        <p class="tweet-text">{{ tweet.text_content|urlize|linebreaksbr }}</p>
+    </div>
+    
+    {% if show_media|default:True and media %}
+        <div class="tweet-media">
+            {% for item in media|slice:":1" %}
+                {% if item.media_type == 'image' or item.media_type == 'gif' %}
+                    <div class="media-image-wrapper">
+                        <img src="{{ MEDIA_URL }}{{ item.file_path }}" alt="Tweet media" class="tweet-media-image">
+                    </div>
+                {% elif item.media_type == 'video' %}
+                    <a href="{% url 'bookmark_detail' tweet.tweet_id %}" class="media-video-wrapper-link">
+                        <div class="media-video-wrapper">
+                            {% if item.thumbnail_path %}
+                                <img src="{{ MEDIA_URL }}{{ item.thumbnail_path }}" alt="Video thumbnail" class="tweet-media-image">
+                            {% endif %}
+                            <div class="video-overlay">
+                                <span class="video-icon">▶</span>
+                            </div>
+                        </div>
+                    </a>
+                {% endif %}
+            {% endfor %}
+        </div>
+    {% endif %}
+    
+    {% if show_engagement|default:True %}
+        <div class="tweet-engagement">
+            <div class="engagement-item">
+                <span class="engagement-icon">💬</span>
+                <span class="engagement-count">{{ tweet.reply_count|default:0 }}</span>
+            </div>
+            <div class="engagement-item">
+                <span class="engagement-icon">🔄</span>
+                <span class="engagement-count">{{ tweet.retweet_count|default:0 }}</span>
+            </div>
+            <div class="engagement-item">
+                <span class="engagement-icon">❤️</span>
+                <span class="engagement-count">{{ tweet.like_count|default:0 }}</span>
+            </div>
+        </div>
+    {% endif %}
+</article>
+{% endwith %}

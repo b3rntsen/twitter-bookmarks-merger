@@ -1,0 +1,157 @@
+services:
+  redis:
+    image: redis:7-alpine
+    # Don't expose port externally - only accessible within Docker network
+    expose:
+      - "6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 300M
+        reservations:
+          memory: 200M
+    networks:
+      - app-network
+
+  web:
+    image: twitter-bookmarks-web
+    build: .  # Fallback if image doesn't exist
+    command: python manage.py runserver 0.0.0.0:8000
+    # Production: no volume mounts for code (baked into image)
+    # But mount staticfiles and media for nginx to serve
+    # Also mount database directory to persist data
+    volumes:
+      - staticfiles:/app/staticfiles
+      - media:/app/media
+      - db_data:/app/db
+    # Don't expose port 8000 directly - nginx will proxy
+    expose:
+      - "8000"
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - Q_WORKERS=1  # Reduce workers to 1 for memory conservation
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 600M
+        reservations:
+          memory: 400M
+    # Health check (using Python since curl may not be available)
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - app-network
+
+  qcluster:
+    image: twitter-bookmarks-web
+    build: .  # Fallback if image doesn't exist
+    command: python manage.py qcluster
+    volumes:
+      - media:/app/media
+      - db_data:/app/db
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - Q_WORKERS=1  # Process only one job at a time to limit memory usage
+      - Q_QUEUE_LIMIT=10  # Reduce queue limit
+    depends_on:
+      redis:
+        condition: service_healthy
+      web:
+        condition: service_started
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 800M  # Allow more for Playwright browsers, but still limit
+        reservations:
+          memory: 500M
+    networks:
+      - app-network
+
+  nginx:
+    image: twitter-bookmarks-nginx
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # SSL certificates from certbot
+      - certbot-etc:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+      # Static and media files (for Django /new-gen/ app)
+      - staticfiles:/app/staticfiles:ro
+      - media:/app/media:ro
+      # Static bookmarks site (synced via rsync from local)
+      - ./bookmarks-html:/app/bookmarks-html:ro
+      - ./bookmarks-media:/app/bookmarks-media:ro
+    depends_on:
+      - web
+    restart: always
+    networks:
+      - app-network
+
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - certbot-etc:/etc/letsencrypt
+      - certbot-www:/var/www/certbot
+    # Auto-renewal: checks once per day (86400 seconds = 24 hours)
+    # Only renews if certificates are within 30 days of expiry (Let's Encrypt default)
+    # Uses --quiet to reduce CPU usage and logging
+    # Uses --no-random-sleep-on-renew to avoid random delays
+    entrypoint: "/bin/sh"
+    command: >
+      -c "
+      trap exit TERM;
+      while :; do
+        # Check and renew certificates (only renews if within 30 days of expiry)
+        certbot renew --quiet --no-random-sleep-on-renew --deploy-hook 'docker exec $$(docker ps -q -f name=nginx) nginx -s reload' || true;
+        # Sleep for 24 hours (86400 seconds) before next check
+        sleep 86400;
+      done;
+      "
+    restart: always
+    networks:
+      - app-network
+    depends_on:
+      - nginx
+
+volumes:
+  media:
+  staticfiles:
+  db_data:  # Persist database across container recreates
+  redis_data:  # Persist Redis data across container recreates
+  certbot-etc:
+  certbot-www:
+
+networks:
+  app-network:
+    driver: bridge
+

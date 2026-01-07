@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}Disconnect Twitter - Twitter Bookmarks{% endblock %}
+
+{% block content %}
+<div class="twitter-disconnect-container">
+    <h1>Disconnect Twitter Account</h1>
+    
+    <div class="alert alert-warning">
+        <p>Are you sure you want to disconnect @{{ profile.twitter_username }}?</p>
+        <p>This will remove your Twitter connection and you'll need to reconnect to sync bookmarks again.</p>
+    </div>
+    
+    <form method="post">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">Yes, Disconnect</button>
+        <a href="{% url 'twitter:connect' %}" class="btn btn-secondary">Cancel</a>
+    </form>
+</div>
+{% endblock %}
+

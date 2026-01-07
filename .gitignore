@@ -7,3 +7,24 @@ __pycache__/
 # Data directories (large media files)
 raw/
 master/
+server/
+
+# Django
+*.sqlite3
+db.sqlite3
+staticfiles/
+media/
+
+# Docker deployment directories (created on server, not committed)
+bookmarks-html/
+bookmarks-media/
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate*
+terraform/tfplan
+terraform/*.tfvars
+
+# Misc
+*.log
+.coverage

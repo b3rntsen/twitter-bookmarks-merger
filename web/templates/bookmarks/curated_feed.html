@@ -1,0 +1,651 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Curated Feed - Twitter Bookmarks{% endblock %}
+
+{% block breadcrumb_items %}
+<li><span>Curated Feed</span></li>
+{% endblock %}
+
+{% block content %}
+<div class="curated-feed-container">
+    <div class="feed-header">
+        <h1>Curated Feed (For You)</h1>
+        <div class="date-navigation">
+            {% if date_nav %}
+                <div class="date-nav-controls">
+                    {% if date_nav.has_previous %}
+                        <a href="?date={{ date_nav.previous_date|date:'Y-m-d' }}" class="btn btn-sm">← Previous</a>
+                    {% elif date_nav.available_dates %}
+                        {# Show disabled state if no previous available date #}
+                        <span class="btn btn-sm" style="opacity: 0.5; cursor: not-allowed;">← Previous</span>
+                    {% endif %}
+                    <input 
+                        type="date" 
+                        value="{{ filter_date|date:'Y-m-d' }}"
+                        onchange="changeDate(this.value)"
+                        class="date-picker"
+                        title="Select date"
+                    >
+                    {% if date_nav.has_next %}
+                        <a href="?date={{ date_nav.next_date|date:'Y-m-d' }}" class="btn btn-sm">Next →</a>
+                    {% elif date_nav.available_dates %}
+                        {# Show disabled state if no next available date #}
+                        <span class="btn btn-sm" style="opacity: 0.5; cursor: not-allowed;">Next →</span>
+                    {% endif %}
+                    {% if not date_nav.is_today %}
+                        <a href="?" class="btn btn-sm">Today</a>
+                    {% endif %}
+                </div>
+                <div class="date-info">
+                    <span class="current-date">{{ filter_date|date:"F d, Y" }}</span>
+                    {% if date_nav.is_today %}
+                        <span class="date-badge">Today</span>
+                    {% endif %}
+                </div>
+            {% endif %}
+        </div>
+    </div>
+    
+    {% if latest_feed %}
+        <div class="feed-info">
+            <p>
+                Processed: {{ latest_feed.processing_date|date:"F d, Y" }} | 
+                {{ latest_feed.num_tweets_fetched }} tweets in {{ latest_feed.num_categories }} categories
+            </p>
+        </div>
+        
+        {% if not categories_data %}
+            <div class="no-categories">
+                <p>Feed fetched but no categories found. This may happen if categorization failed. Try fetching again.</p>
+            </div>
+        {% endif %}
+        
+        {% if categories_data %}
+            <div class="two-pane-layout">
+                <!-- Left Pane: Categories -->
+                <div class="categories-pane">
+                    <h2>Categories</h2>
+                    <div class="categories-list">
+                        {% for cat_data in categories_data %}
+                            <div class="category-item" data-category-id="{{ cat_data.category.id }}">
+                                <h3>{{ cat_data.category.name }}</h3>
+                                <p class="category-description">{{ cat_data.category.description }}</p>
+                                <span class="tweet-count">{{ cat_data.tweets|length }} tweet{{ cat_data.tweets|length|pluralize }}</span>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                
+                <!-- Right Pane: Summary and Tweets -->
+                <div class="summary-pane">
+                    <div class="summary-content">
+                        <h2>Category Summaries</h2>
+                        
+                        {% for cat_data in categories_data %}
+                            <div class="category-summary" id="summary-{{ cat_data.category.id }}" style="display: block;">
+                                <h3>{{ cat_data.category.name }}</h3>
+                                {% if cat_data.summary %}
+                                    <div class="summary-text">
+                                        {{ cat_data.summary|linebreaks }}
+                                    </div>
+                                {% else %}
+                                    <p class="no-summary">No summary available for this category.</p>
+                                {% endif %}
+                                
+                                <div class="tweets-list">
+                                    <h4>Tweets in this category:</h4>
+                                    <div class="curated-tweets-container">
+                                        {% for tweet in cat_data.tweets %}
+                                            {% include 'bookmarks/tweet_card.html' with tweet=tweet show_actions=False show_media=True show_engagement=True %}
+                                        {% endfor %}
+                                    </div>
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+            </div>
+        {% else %}
+            <p class="no-data">No categories found. Please fetch a new feed.</p>
+        {% endif %}
+    {% else %}
+        <div class="no-feed">
+            {% if date_nav.is_today %}
+                <div class="processing-status-message">
+                    {% if processing_status.is_processing %}
+                        <p><strong>🔄 Content is being processed right now.</strong></p>
+                        <p>Curated feed is currently being generated. Please check back in a few minutes.</p>
+                    {% else %}
+                        <p><strong>Content is processed automatically.</strong></p>
+                        <p>Curated feeds are generated daily. If no content appears, processing may still be in progress.</p>
+                        {% if processing_status.next_processing_time %}
+                            <p><strong>Next update:</strong> {{ processing_status.next_processing_time|date:"F d, Y g:i A" }} UTC</p>
+                        {% endif %}
+                        {% if processing_status.estimated_processing_time %}
+                            <p><strong>Estimated processing time:</strong> ~{{ processing_status.estimated_processing_time }} minutes</p>
+                        {% endif %}
+                    {% endif %}
+                    <p><a href="{% url 'processing:processing_status' %}">View detailed processing status</a></p>
+                </div>
+            {% else %}
+                <div class="processing-status-message">
+                    <p>No curated feed available for {{ filter_date|date:"F d, Y" }}.</p>
+                    <p>Content is processed daily. This date may not have had any content, or processing may not have completed yet.</p>
+                </div>
+            {% endif %}
+        </div>
+    {% endif %}
+</div>
+
+{# Pass available dates to JavaScript for validation #}
+{% if date_nav and date_nav.available_dates %}
+<script id="available-dates-data" type="application/json">
+[{% for date in date_nav.available_dates %}"{{ date|date:'Y-m-d' }}"{% if not forloop.last %},{% endif %}{% endfor %}]
+</script>
+{% endif %}
+
+<script>
+function changeDate(dateStr) {
+    const url = new URL(window.location.href);
+    url.searchParams.set('date', dateStr);
+    window.location.href = url.toString();
+}
+</script>
+
+<style>
+.curated-feed-container {
+    max-width: 1400px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.feed-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 15px;
+    border-bottom: 2px solid #e1e8ed;
+}
+
+.feed-header h1 {
+    margin: 0;
+    font-size: 24px;
+    color: #14171a;
+}
+
+.feed-info {
+    margin-bottom: 20px;
+    color: #657786;
+    font-size: 14px;
+}
+
+.two-pane-layout {
+    display: grid;
+    grid-template-columns: 300px 1fr;
+    gap: 20px;
+    min-height: 600px;
+}
+
+.categories-pane {
+    background: #f7f9fa;
+    border-radius: 8px;
+    padding: 20px;
+    overflow-y: auto;
+    max-height: 80vh;
+}
+
+.categories-pane h2 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    font-size: 20px;
+    color: #14171a;
+}
+
+.categories-list {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.category-item {
+    background: white;
+    border: 2px solid #e1e8ed;
+    border-radius: 8px;
+    padding: 15px;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.category-item:hover {
+    border-color: #1da1f2;
+    box-shadow: 0 2px 8px rgba(29, 161, 242, 0.1);
+}
+
+.category-item.active {
+    border-color: #1da1f2;
+    background: #e8f5fe;
+}
+
+.category-item h3 {
+    margin: 0 0 8px 0;
+    font-size: 16px;
+    color: #14171a;
+}
+
+.category-description {
+    margin: 8px 0;
+    font-size: 13px;
+    color: #657786;
+    line-height: 1.4;
+}
+
+.tweet-count {
+    display: inline-block;
+    margin-top: 8px;
+    font-size: 12px;
+    color: #1da1f2;
+    font-weight: 600;
+}
+
+.summary-pane {
+    background: white;
+    border-radius: 8px;
+    padding: 30px;
+    overflow-y: auto;
+    max-height: 80vh;
+    border: 1px solid #e1e8ed;
+}
+
+.summary-content {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.summary-pane h2 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    font-size: 24px;
+    color: #14171a;
+}
+
+.category-summary {
+    animation: fadeIn 0.3s;
+    margin-bottom: 40px;
+    padding-bottom: 30px;
+    border-bottom: 2px solid #e1e8ed;
+}
+
+.category-summary:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+    padding-bottom: 0;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+.category-summary h3 {
+    margin-top: 0;
+    margin-bottom: 15px;
+    font-size: 22px;
+    color: #14171a;
+}
+
+.summary-text {
+    background: #f7f9fa;
+    padding: 20px;
+    border-radius: 8px;
+    margin-bottom: 30px;
+    line-height: 1.6;
+    color: #14171a;
+    white-space: pre-wrap;
+}
+
+.no-summary {
+    color: #657786;
+    font-style: italic;
+    margin-bottom: 30px;
+}
+
+.tweets-list h4 {
+    margin-top: 30px;
+    margin-bottom: 20px;
+    font-size: 18px;
+    color: #14171a;
+    border-bottom: 2px solid #e1e8ed;
+    padding-bottom: 10px;
+}
+
+.curated-tweets-container {
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+}
+
+.curated-tweets-container .tweet-card {
+    margin-bottom: 0;
+}
+
+.no-data, .no-feed {
+    text-align: center;
+    padding: 60px 20px;
+    color: #657786;
+    font-size: 16px;
+}
+
+.no-categories {
+    background: #fff3cd;
+    border: 1px solid #ffc107;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+    color: #856404;
+}
+
+.processing-note {
+    background: #d1ecf1;
+    border: 1px solid #bee5eb;
+    border-radius: 8px;
+    padding: 15px;
+    margin-top: 20px;
+    color: #0c5460;
+}
+
+.btn {
+    display: inline-block;
+    padding: 10px 20px;
+    background: #1da1f2;
+    color: white;
+    text-decoration: none;
+    border-radius: 20px;
+    font-weight: 600;
+    transition: background 0.2s;
+}
+
+.btn:hover {
+    background: #1a91da;
+}
+
+.btn-primary {
+    background: #1da1f2;
+}
+
+.date-navigation {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    align-items: flex-end;
+}
+
+.date-nav-controls {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.date-picker {
+    padding: 8px 12px;
+    border: 1px solid #e1e8ed;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+.date-info {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    font-size: 14px;
+    color: #657786;
+}
+
+.current-date {
+    font-weight: 600;
+    color: #14171a;
+}
+
+.date-badge {
+    background: #1da1f2;
+    color: white;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.processing-status-message {
+    background: #d1ecf1;
+    border: 1px solid #bee5eb;
+    border-radius: 8px;
+    padding: 20px;
+    margin: 20px 0;
+    color: #0c5460;
+}
+
+.processing-status-message p {
+    margin: 8px 0;
+}
+
+.processing-status-message a {
+    color: #1da1f2;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.processing-status-message a:hover {
+    text-decoration: underline;
+}
+
+@media (max-width: 968px) {
+    .two-pane-layout {
+        grid-template-columns: 1fr;
+    }
+    
+    .categories-pane {
+        max-height: 300px;
+    }
+}
+</style>
+
+<script>
+// Category selection JavaScript removed - all summaries are now visible by default
+// Category items can still be clicked for visual feedback if needed, but summaries remain visible
+document.addEventListener('DOMContentLoaded', function() {
+    const categoryItems = document.querySelectorAll('.category-item');
+    
+    // Optional: Add hover/click feedback for category items (visual only, summaries stay visible)
+    categoryItems.forEach(item => {
+        item.addEventListener('click', function() {
+            // Remove active class from all items
+            categoryItems.forEach(i => i.classList.remove('active'));
+            
+            // Add active class to clicked item for visual feedback
+            this.classList.add('active');
+            
+            // Scroll to the corresponding summary
+            const categoryId = this.dataset.categoryId;
+            const selectedSummary = document.getElementById('summary-' + categoryId);
+            if (selectedSummary) {
+                selectedSummary.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+        });
+    });
+});
+</script>
+
+<!-- PDF Preview Modal (for tweet cards that may have PDF actions) -->
+<div id="pdfModal" class="pdf-modal" style="display: none;">
+    <div class="pdf-modal-content">
+        <div class="pdf-modal-header">
+            <h3>PDF Preview</h3>
+            <button class="pdf-modal-close" onclick="closePDFModal()" aria-label="Close">&times;</button>
+        </div>
+        <div class="pdf-modal-body">
+            <div id="pdfLoading" class="pdf-loading">
+                <div class="loading-spinner">Loading PDF...</div>
+            </div>
+            <iframe id="pdfPreviewFrame" src="" style="width: 100%; height: calc(90vh - 80px); border: none; display: none;"></iframe>
+        </div>
+    </div>
+</div>
+
+<script>
+async function previewPDF(url) {
+    const modal = document.getElementById('pdfModal');
+    const frame = document.getElementById('pdfPreviewFrame');
+    const loadingIndicator = document.getElementById('pdfLoading');
+    
+    if (!modal || !frame || !loadingIndicator) return;
+    
+    modal.style.display = 'flex';
+    loadingIndicator.style.display = 'block';
+    frame.style.display = 'none';
+    document.body.style.overflow = 'hidden';
+    
+    try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error('Failed to load PDF');
+        
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        
+        frame.src = blobUrl;
+        frame.onload = function() {
+            loadingIndicator.style.display = 'none';
+            frame.style.display = 'block';
+        };
+        
+        frame.onerror = function() {
+            loadingIndicator.style.display = 'none';
+            loadingIndicator.innerHTML = '<p style="color: red;">Failed to load PDF.</p>';
+        };
+    } catch (error) {
+        console.error('Error loading PDF:', error);
+        loadingIndicator.style.display = 'none';
+        loadingIndicator.innerHTML = '<p style="color: red;">Error loading PDF.</p>';
+    }
+}
+
+function closePDFModal() {
+    const modal = document.getElementById('pdfModal');
+    const frame = document.getElementById('pdfPreviewFrame');
+    const loadingIndicator = document.getElementById('pdfLoading');
+    
+    if (!modal || !frame || !loadingIndicator) return;
+    
+    modal.style.display = 'none';
+    
+    if (frame.src && frame.src.startsWith('blob:')) {
+        URL.revokeObjectURL(frame.src);
+    }
+    
+    frame.src = '';
+    frame.style.display = 'none';
+    loadingIndicator.style.display = 'block';
+    loadingIndicator.innerHTML = '<div class="loading-spinner">Loading PDF...</div>';
+    document.body.style.overflow = '';
+}
+
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+        const modal = document.getElementById('pdfModal');
+        if (modal && modal.style.display === 'flex') {
+            closePDFModal();
+        }
+    }
+});
+
+const pdfModal = document.getElementById('pdfModal');
+if (pdfModal) {
+    pdfModal.addEventListener('click', function(event) {
+        if (event.target === this) {
+            closePDFModal();
+        }
+    });
+}
+</script>
+
+<style>
+/* PDF Modal Styles */
+.pdf-modal {
+    display: none;
+    position: fixed;
+    z-index: 10000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.7);
+    justify-content: center;
+    align-items: center;
+}
+
+.pdf-modal-content {
+    background-color: white;
+    border-radius: 8px;
+    width: 90%;
+    max-width: 1200px;
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+}
+
+.pdf-modal-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 15px 20px;
+    border-bottom: 1px solid #e1e8ed;
+}
+
+.pdf-modal-header h3 {
+    margin: 0;
+    font-size: 18px;
+    color: #14171a;
+}
+
+.pdf-modal-close {
+    background: none;
+    border: none;
+    font-size: 28px;
+    color: #657786;
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    transition: background 0.2s;
+}
+
+.pdf-modal-close:hover {
+    background: #f7f9fa;
+    color: #14171a;
+}
+
+.pdf-modal-body {
+    flex: 1;
+    overflow: hidden;
+    position: relative;
+}
+
+.pdf-loading {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 400px;
+}
+
+.loading-spinner {
+    color: #1da1f2;
+    font-size: 16px;
+}
+</style>
+{% endblock %}

@@ -1,2 +1,41 @@
-anthropic>=0.40.0
+# Django web framework and extensions
+Django>=5.0,<6.0
+django-allauth>=0.57.0
+djangorestframework>=3.14.0
+python-decouple>=3.8
+
+# Browser automation
+selenium>=4.15.0
+playwright>=1.40.0
+
+# Twitter scraping
+twikit>=0.1.0
+beautifulsoup4>=4.12.0
+requests>=2.31.0
+
+# PDF and document processing
+weasyprint>=60.0
+Pillow>=10.0.0
+lxml>=4.9.0
 markdown>=3.0
+
+# Security
+cryptography>=41.0.0
+pyjwt[crypto]>=2.0,<3.0
+
+# AI/ML
+anthropic>=0.40.0
+openai>=1.0.0
+scikit-learn>=1.3.0
+numpy>=1.24.0
+
+# Background job processing
+django-q2>=1.9.0
+redis>=5.0.0
+hiredis>=2.2.0
+
+# Testing
+pytest>=7.4.0
+pytest-django>=4.5.0
+pytest-cov>=4.1.0
+pytest-mock>=3.11.0

@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+{% load static %}
+{% load bookmark_tags %}
+
+{% block title %}Bookmark Detail - Twitter Bookmarks{% endblock %}
+
+{% block breadcrumb_items %}
+<li><a href="{% url 'bookmark_list' %}">Bookmarks</a></li>
+<li><span>Bookmark {{ bookmark.tweet_id }}</span></li>
+{% endblock %}
+
+{% block content %}
+<div class="twitter-tweet-container">
+        <div class="tweet-actions-bar">
+            <a href="{% url 'bookmark_list' %}" class="back-link">← Back to Bookmarks</a>
+            <div class="tweet-actions">
+                {% if bookmark.raw_data.url %}
+                    <a href="{% if bookmark.raw_data.url|slice:':4' == 'http' %}{{ bookmark.raw_data.url }}{% else %}https://x.com{{ bookmark.raw_data.url }}{% endif %}" target="_blank" class="btn-icon twitter-icon" title="Open on Twitter/X">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M23.953 4.57a10 10 0 01-2.825.775 4.958 4.958 0 002.163-2.723c-.951.555-2.005.959-3.127 1.184a4.92 4.92 0 00-8.384 4.482C7.69 8.095 4.067 6.13 1.64 3.162a4.822 4.822 0 00-.666 2.475c0 1.71.87 3.213 2.188 4.096a4.904 4.904 0 01-2.228-.616v.06a4.923 4.923 0 003.946 4.827 4.996 4.996 0 01-2.212.085 4.936 4.936 0 004.604 3.417 9.867 9.867 0 01-6.102 2.105c-.39 0-.779-.023-1.17-.067a13.995 13.995 0 007.557 2.209c9.053 0 13.998-7.496 13.998-13.985 0-.21 0-.42-.015-.63A9.935 9.935 0 0024 4.59z"/>
+                        </svg>
+                    </a>
+                {% endif %}
+                {% if bookmark.html_content_sanitized %}
+                    <a href="{% url 'view_html' bookmark.tweet_id %}" class="btn-icon" title="View HTML">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="16 18 22 12 16 6"></polyline>
+                            <polyline points="8 6 2 12 8 18"></polyline>
+                        </svg>
+                    </a>
+                {% endif %}
+                <button onclick="previewPDF('{% url 'preview_pdf' bookmark.tweet_id %}')" class="btn-icon" title="Preview PDF">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="16" y1="13" x2="8" y2="13"></line>
+                        <line x1="16" y1="17" x2="8" y2="17"></line>
+                    </svg>
+                </button>
+                <a href="{% url 'download_pdf' bookmark.tweet_id %}" class="btn-icon" title="Download PDF">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                        <polyline points="7 10 12 15 17 10"></polyline>
+                        <line x1="12" y1="15" x2="12" y2="3"></line>
+                    </svg>
+                </a>
+            </div>
+        </div>
+    
+    <article class="tweet-card">
+        <div class="tweet-header">
+            <div class="tweet-author">
+                <div class="author-avatar">
+                    {% if bookmark.author_profile_image_url %}
+                        <img src="{{ bookmark.author_profile_image_url }}" alt="{{ bookmark.author_display_name|default:bookmark.author_username }}" class="profile-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                        <div class="avatar-placeholder" style="display: none;">{{ bookmark.author_display_name|default:bookmark.author_username|first|upper }}</div>
+                    {% else %}
+                        <div class="avatar-placeholder">{{ bookmark.author_display_name|default:bookmark.author_username|first|upper }}</div>
+                    {% endif %}
+                </div>
+                <div class="author-info">
+                    <div class="author-name">{{ bookmark.author_display_name|default:bookmark.author_username }}</div>
+                    <div class="author-handle">@{{ bookmark.author_username }}</div>
+                </div>
+            </div>
+            <div class="tweet-timestamp">
+                {% if bookmark.raw_data.url %}
+                    <a href="{% if bookmark.raw_data.url|slice:':4' == 'http' %}{{ bookmark.raw_data.url }}{% else %}https://x.com{{ bookmark.raw_data.url }}{% endif %}" target="_blank" class="tweet-link">
+                        <time datetime="{{ bookmark.created_at|date:'c' }}">{{ bookmark.created_at|timesince }} ago</time>
+                    </a>
+                {% else %}
+                    <time datetime="{{ bookmark.created_at|date:'c' }}">{{ bookmark.created_at|timesince }} ago</time>
+                {% endif %}
+            </div>
+        </div>
+        
+        <div class="tweet-content">
+            <p class="tweet-text">{{ bookmark.text_content|urlize|linebreaksbr }}</p>
+        </div>
+        
+        {% if media %}
+            <div class="tweet-media">
+                {% for item in media %}
+                    {% if item.media_type == 'image' or item.media_type == 'gif' %}
+                        <div class="media-image-wrapper">
+                            <img src="{{ MEDIA_URL }}{{ item.file_path }}" alt="Tweet media" class="tweet-media-image">
+                        </div>
+                    {% elif item.media_type == 'video' %}
+                        {% if item.file_path %}
+                            <div class="media-video-wrapper">
+                                <video controls preload="metadata" class="tweet-video-player"{% if item.thumbnail_path %} poster="{{ MEDIA_URL }}{{ item.thumbnail_path }}"{% endif %}>
+                                    <source src="{% url 'serve_video' bookmark.tweet_id item.file_path|filename %}" type="video/mp4">
+                                    Your browser does not support the video tag.
+                                </video>
+                            </div>
+                        {% else %}
+                            <div class="video-placeholder">
+                                <p>Video unavailable locally</p>
+                                {% if item.original_url %}
+                                    <a href="{{ item.original_url }}" target="_blank" class="video-fallback-link">View on Twitter</a>
+                                {% endif %}
+                            </div>
+                        {% endif %}
+                    {% endif %}
+                {% endfor %}
+            </div>
+        {% endif %}
+        
+        <div class="tweet-engagement">
+            <div class="engagement-item">
+                <span class="engagement-icon">💬</span>
+                <span class="engagement-count">{{ bookmark.reply_count|default:0 }}</span>
+            </div>
+            <div class="engagement-item">
+                <span class="engagement-icon">🔄</span>
+                <span class="engagement-count">{{ bookmark.retweet_count|default:0 }}</span>
+            </div>
+            <div class="engagement-item">
+                <span class="engagement-icon">❤️</span>
+                <span class="engagement-count">{{ bookmark.like_count|default:0 }}</span>
+            </div>
+        </div>
+    </article>
+    
+    {% if has_thread and thread_tweets|length > 1 %}
+        <div class="thread-section">
+            <h3 class="thread-title">Thread</h3>
+            {% for thread_tweet in thread_tweets %}
+                {% if thread_tweet.tweet_id != bookmark.tweet_id %}
+                    <article class="tweet-card thread-tweet">
+                        <div class="tweet-header">
+                            <div class="tweet-author">
+                                <div class="author-avatar">
+                                    {% if thread_tweet.author_profile_image_url %}
+                                        <img src="{{ thread_tweet.author_profile_image_url }}" alt="{{ thread_tweet.author_display_name|default:thread_tweet.author_username }}" class="profile-image" onerror="this.style.display='none'; this.nextElementSibling.style.display='flex';">
+                                        <div class="avatar-placeholder" style="display: none;">{{ thread_tweet.author_display_name|default:thread_tweet.author_username|first|upper }}</div>
+                                    {% else %}
+                                        <div class="avatar-placeholder">{{ thread_tweet.author_display_name|default:thread_tweet.author_username|first|upper }}</div>
+                                    {% endif %}
+                                </div>
+                                <div class="author-info">
+                                    <div class="author-name">{{ thread_tweet.author_display_name|default:thread_tweet.author_username }}</div>
+                                    <div class="author-handle">@{{ thread_tweet.author_username }}</div>
+                                </div>
+                            </div>
+                            <div class="tweet-timestamp">
+                                <time datetime="{{ thread_tweet.created_at|date:'c' }}">{{ thread_tweet.created_at|timesince }} ago</time>
+                            </div>
+                        </div>
+                        <div class="tweet-content">
+                            <p class="tweet-text">{{ thread_tweet.text_content|urlize|linebreaksbr }}</p>
+                        </div>
+                    </article>
+                {% endif %}
+            {% endfor %}
+        </div>
+    {% endif %}
+</div>
+
+<!-- PDF Preview Modal -->
+<div id="pdfModal" class="pdf-modal" style="display: none;">
+    <div class="pdf-modal-content">
+        <div class="pdf-modal-header">
+            <h3>PDF Preview</h3>
+            <button class="pdf-modal-close" onclick="closePDFModal()" aria-label="Close">&times;</button>
+        </div>
+        <div class="pdf-modal-body">
+            <div id="pdfLoading" class="pdf-loading">
+                <div class="loading-spinner">Loading PDF...</div>
+            </div>
+            <iframe id="pdfPreviewFrame" src="" style="width: 100%; height: calc(90vh - 80px); border: none; display: none;"></iframe>
+        </div>
+    </div>
+</div>
+
+<script>
+async function previewPDF(url) {
+    const modal = document.getElementById('pdfModal');
+    const frame = document.getElementById('pdfPreviewFrame');
+    const loadingIndicator = document.getElementById('pdfLoading');
+    
+    // Show modal and loading indicator
+    modal.style.display = 'flex';
+    loadingIndicator.style.display = 'block';
+    frame.style.display = 'none';
+    document.body.style.overflow = 'hidden';
+    
+    try {
+        // Fetch PDF as blob
+        const response = await fetch(url);
+        if (!response.ok) {
+            throw new Error('Failed to load PDF');
+        }
+        
+        const blob = await response.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        
+        // Set iframe source to blob URL
+        frame.src = blobUrl;
+        frame.onload = function() {
+            loadingIndicator.style.display = 'none';
+            frame.style.display = 'block';
+        };
+        
+        frame.onerror = function() {
+            loadingIndicator.style.display = 'none';
+            loadingIndicator.innerHTML = '<p style="color: red;">Failed to load PDF. Please try downloading instead.</p>';
+        };
+    } catch (error) {
+        console.error('Error loading PDF:', error);
+        loadingIndicator.style.display = 'none';
+        loadingIndicator.innerHTML = '<p style="color: red;">Error loading PDF. Please try downloading instead.</p>';
+    }
+}
+
+function closePDFModal() {
+    const modal = document.getElementById('pdfModal');
+    const frame = document.getElementById('pdfPreviewFrame');
+    const loadingIndicator = document.getElementById('pdfLoading');
+    
+    modal.style.display = 'none';
+    
+    // Clean up blob URL to free memory
+    if (frame.src && frame.src.startsWith('blob:')) {
+        URL.revokeObjectURL(frame.src);
+    }
+    
+    frame.src = '';
+    frame.style.display = 'none';
+    loadingIndicator.style.display = 'block';
+    loadingIndicator.innerHTML = '<div class="loading-spinner">Loading PDF...</div>';
+    document.body.style.overflow = '';
+}
+
+// Close modal on ESC key
+document.addEventListener('keydown', function(event) {
+    if (event.key === 'Escape') {
+        const modal = document.getElementById('pdfModal');
+        if (modal.style.display === 'flex') {
+            closePDFModal();
+        }
+    }
+});
+
+// Close modal when clicking outside the content
+document.getElementById('pdfModal').addEventListener('click', function(event) {
+    if (event.target === this) {
+        closePDFModal();
+    }
+});
+</script>
+{% endblock %}
+

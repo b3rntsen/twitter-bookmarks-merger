@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Delete Bookmark - Twitter Bookmarks{% endblock %}
+
+{% block content %}
+<div class="bookmarks-container">
+    <h1>Delete Bookmark</h1>
+    
+    <div class="alert alert-warning">
+        <strong>Warning:</strong> This will permanently delete this bookmark and all associated media files.
+    </div>
+    
+    <div class="bookmark-card">
+        <div class="bookmark-header">
+            <span class="author">@{{ bookmark.author_username }}</span>
+            <span class="date">{{ bookmark.created_at|date:"M d, Y" }}</span>
+        </div>
+        <div class="bookmark-content">
+            <p>{{ bookmark.text_content|truncatewords:50 }}</p>
+        </div>
+    </div>
+    
+    <form method="post" style="margin-top: 2rem;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">Yes, Delete Bookmark</button>
+        <a href="{% url 'bookmark_list' %}" class="btn btn-secondary">Cancel</a>
+    </form>
+</div>
+{% endblock %}
+

@@ -1,0 +1,23 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Delete All Bookmarks - Twitter Bookmarks{% endblock %}
+
+{% block content %}
+<div class="bookmarks-container">
+    <h1>Delete All Bookmarks</h1>
+    
+    <div class="alert alert-error">
+        <strong>Warning:</strong> This will permanently delete <strong>{{ bookmark_count }}</strong> bookmark(s) and all associated media files. This action cannot be undone!
+    </div>
+    
+    <p>Are you sure you want to delete all your bookmarks? You can always re-sync them later.</p>
+    
+    <form method="post" style="margin-top: 2rem;">
+        {% csrf_token %}
+        <button type="submit" class="btn btn-danger">Yes, Delete All Bookmarks</button>
+        <a href="{% url 'bookmark_list' %}" class="btn btn-secondary">Cancel</a>
+    </form>
+</div>
+{% endblock %}
+

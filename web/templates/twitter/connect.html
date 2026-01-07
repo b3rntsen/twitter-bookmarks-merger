@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+
+{% block title %}Connect Twitter - Twitter Bookmarks{% endblock %}
+
+{% block content %}
+<div class="twitter-connect-container">
+    <h1>Connect Your Twitter Account</h1>
+    
+    {% if existing_profile %}
+        <div class="alert alert-info">
+            <p>You currently have @{{ existing_profile.twitter_username }} connected.</p>
+            <p>Last sync: {{ existing_profile.last_sync_at|default:"Never" }}</p>
+            <a href="{% url 'twitter:disconnect' %}" class="btn btn-danger">Disconnect</a>
+        </div>
+    {% endif %}
+    
+    <form method="post" class="twitter-form">
+        {% csrf_token %}
+        
+        <div class="form-group">
+            <label for="{{ form.username.id_for_label }}">Twitter Username</label>
+            {{ form.username }}
+            {% if form.username.errors %}
+                <div class="error">{{ form.username.errors }}</div>
+            {% endif %}
+        </div>
+        
+        <div class="form-group">
+            <label>
+                {{ form.use_cookies }}
+                Use Session Cookies (instead of password)
+            </label>
+            {% if form.use_cookies.errors %}
+                <div class="error">{{ form.use_cookies.errors }}</div>
+            {% endif %}
+        </div>
+        
+        <div class="form-group" id="password-group">
+            <label for="{{ form.password.id_for_label }}">Password</label>
+            {{ form.password }}
+            <small>{{ form.password.help_text }}</small>
+            {% if form.password.errors %}
+                <div class="error">{{ form.password.errors }}</div>
+            {% endif %}
+        </div>
+        
+        <div class="form-group" id="cookies-group" style="display: none;">
+            <label for="{{ form.cookies_json.id_for_label }}">Session Cookies (JSON)</label>
+            {{ form.cookies_json }}
+            <small>{{ form.cookies_json.help_text }}</small>
+            {% if form.cookies_json.errors %}
+                <div class="error">{{ form.cookies_json.errors }}</div>
+            {% endif %}
+        </div>
+        
+        {% if form.non_field_errors %}
+            <div class="error">{{ form.non_field_errors }}</div>
+        {% endif %}
+        
+        <button type="submit" class="btn btn-primary">Connect Twitter Account</button>
+    </form>
+    
+    <div class="info-box">
+        <h3>How to get session cookies (optional):</h3>
+        <ol>
+            <li>Log in to Twitter/X in your browser</li>
+            <li>Open Developer Tools (F12)</li>
+            <li>Go to Application/Storage tab</li>
+            <li>Find Cookies for x.com</li>
+            <li>Copy the relevant cookie values as JSON</li>
+        </ol>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const useCookiesCheckbox = document.querySelector('#{{ form.use_cookies.id_for_label }}');
+    const passwordGroup = document.getElementById('password-group');
+    const cookiesGroup = document.getElementById('cookies-group');
+    
+    useCookiesCheckbox.addEventListener('change', function() {
+        if (this.checked) {
+            passwordGroup.style.display = 'none';
+            cookiesGroup.style.display = 'block';
+        } else {
+            passwordGroup.style.display = 'block';
+            cookiesGroup.style.display = 'none';
+        }
+    });
+});
+</script>
+{% endblock %}
+

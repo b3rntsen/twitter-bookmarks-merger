@@ -1,0 +1,73 @@
+{% extends "base.html" %}
+
+{% block title %}Sync Bookmarks - Twitter Bookmarks{% endblock %}
+
+{% block content %}
+<div class="twitter-sync-container">
+    <h1>Sync Twitter Bookmarks</h1>
+    
+    <div class="sync-info">
+        <p><strong>Connected account:</strong> @{{ profile.twitter_username }}</p>
+        <p><strong>Last sync:</strong> {{ profile.last_sync_at|default:"Never" }}</p>
+        {% if profile.sync_status == 'pending' and not profile.last_sync_at %}
+            <p><strong>Status:</strong> <span style="color: #666;">Ready to sync (not started yet)</span></p>
+        {% elif profile.sync_status == 'pending' %}
+            <p><strong>Status:</strong> <span style="color: orange;">Sync in progress...</span></p>
+        {% elif profile.sync_status == 'success' %}
+            <p><strong>Status:</strong> <span style="color: green;">✓ Last sync successful</span></p>
+        {% elif profile.sync_status == 'error' %}
+            <p><strong>Status:</strong> <span style="color: red;">✗ Last sync failed</span></p>
+        {% else %}
+            <p><strong>Status:</strong> {{ profile.get_sync_status_display }}</p>
+        {% endif %}
+    </div>
+    
+    {% if profile.sync_status == 'pending' and not profile.last_sync_at %}
+        <div class="alert alert-info" style="margin: 1.5rem 0;">
+            <strong>Ready to sync!</strong> Click the button below to start fetching your Twitter bookmarks.
+        </div>
+    {% elif profile.sync_status == 'pending' %}
+        <div class="alert alert-warning" style="margin: 1.5rem 0;">
+            <strong>Sync in progress...</strong> Please wait for the current sync to complete. 
+            If it's been stuck for more than 5 minutes, you can try starting a new sync.
+        </div>
+    {% endif %}
+    
+    <div class="automatic-processing-info" style="background: #d1ecf1; border: 1px solid #bee5eb; border-radius: 8px; padding: 20px; margin: 20px 0;">
+        <h3 style="margin-top: 0; color: #0c5460;">Automatic Processing</h3>
+        <p style="color: #0c5460; margin-bottom: 10px;">
+            <strong>Content is now processed automatically!</strong> Your bookmarks, curated feed, and lists are fetched daily without manual intervention.
+        </p>
+        <p style="color: #0c5460; margin-bottom: 0;">
+            <a href="{% url 'processing:processing_status' %}" style="color: #1da1f2; font-weight: 600;">View processing status</a> to see when content was last processed and when the next update will run.
+        </p>
+    </div>
+    
+    {% if profile.sync_error_message %}
+        <div class="alert alert-error">
+            <strong>Last error:</strong> {{ profile.sync_error_message }}
+            {% if "decryption" in profile.sync_error_message|lower or "encryption key" in profile.sync_error_message|lower %}
+                <br><br>
+                <strong>Solution:</strong> Please disconnect and reconnect your Twitter account to fix this issue.
+                <a href="{% url 'twitter:connect' %}" class="btn btn-sm" style="margin-top: 10px;">Reconnect Twitter</a>
+            {% endif %}
+        </div>
+    {% endif %}
+    
+    <div class="info-box" style="margin-top: 2rem; padding: 1rem; background-color: #f9f9f9; border-radius: 4px;">
+        <h3 style="margin-top: 0;">How Automatic Processing Works:</h3>
+        <ol style="margin-left: 1.5rem;">
+            <li>Content is processed daily at your configured time (default: 2:00 AM UTC)</li>
+            <li>The system automatically fetches bookmarks, curated feed, and list tweets</li>
+            <li>Content is categorized and organized automatically</li>
+            <li>You can view processed content by date using the date navigation controls</li>
+            <li>Processing status and history are available in the <a href="{% url 'processing:processing_status' %}">processing status page</a></li>
+        </ol>
+        <p style="margin-top: 1rem; margin-bottom: 0;">
+            <strong>Note:</strong> When you first connect your Twitter account, processing starts immediately. 
+            After that, content is updated automatically on a daily schedule.
+        </p>
+    </div>
+</div>
+{% endblock %}
+

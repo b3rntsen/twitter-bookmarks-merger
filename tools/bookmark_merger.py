@@ -1152,6 +1152,31 @@ def render_media_html(tweet_id: str, media_dir: Path) -> str:
     return "\n".join(html_parts) if len(html_parts) > 2 else ""
 
 
+def render_media_html_server(tweet_id: str, media_dir: Path) -> str:
+    """Render HTML for tweet media using absolute server paths.
+    For nginx serving at /media/bookmarks/{tweet_id}/
+    """
+    tweet_media_dir = media_dir / tweet_id
+    if not tweet_media_dir.exists():
+        return ""
+
+    media_files = list(tweet_media_dir.iterdir())
+    if not media_files:
+        return ""
+
+    html_parts = ['<div class="tweet-media">']
+    for media_file in media_files:
+        # Absolute path for server - nginx serves /media/bookmarks/ from /app/bookmarks-media/
+        abs_path = f"/media/bookmarks/{tweet_id}/{media_file.name}"
+        if media_file.suffix.lower() in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
+            html_parts.append(f'<img src="{abs_path}" alt="Tweet media" loading="lazy">')
+        elif media_file.suffix.lower() in [".mp4", ".webm", ".mov"]:
+            html_parts.append(f'<video src="{abs_path}" controls preload="metadata"></video>')
+    html_parts.append('</div>')
+
+    return "\n".join(html_parts) if len(html_parts) > 2 else ""
+
+
 def render_media_html_cdn(bookmark: dict) -> str:
     """Render HTML for tweet media using Twitter CDN URLs.
     Videos are shown as thumbnails with play overlay linking to tweet (Twitter blocks video CDN).
@@ -1188,8 +1213,15 @@ def render_media_html_cdn(bookmark: dict) -> str:
 
 
 def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
-                      include_detail_link: bool = True, use_cdn: bool = False) -> str:
-    """Render a tweet card HTML. If use_cdn=True, uses Twitter CDN URLs for media."""
+                      include_detail_link: bool = True, use_cdn: bool = False,
+                      use_server: bool = False) -> str:
+    """Render a tweet card HTML.
+
+    Media rendering modes:
+    - use_cdn=True: Twitter CDN URLs (for GitHub Pages)
+    - use_server=True: Absolute /media/bookmarks/ paths (for EC2 server)
+    - Both False: Relative ../media/ paths (for local viewing)
+    """
     tweet_id = bookmark.get("Tweet Id", "")
 
     # Get categories for this tweet
@@ -1213,9 +1245,11 @@ def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
 
     detail_link = f' | <a href="../tweets/{tweet_id}.html">Details</a>' if include_detail_link else ""
 
-    # Use CDN or local media
+    # Select media rendering mode
     if use_cdn:
         media_html = render_media_html_cdn(bookmark)
+    elif use_server:
+        media_html = render_media_html_server(tweet_id, MASTER_MEDIA_DIR)
     else:
         media_html = render_media_html(tweet_id, MASTER_MEDIA_DIR)
 
@@ -2690,6 +2724,182 @@ def generate_html_cdn(output_dir: Path, bookmarks: list[dict], categories_data: 
     print(f"Generated CDN-based HTML in {html_dir}")
 
 
+def add_newgen_link(html: str) -> str:
+    """Add 'New-Gen' link to navbar for server version"""
+    # Add New-Gen link after Stories link (handles both relative and absolute paths)
+    html = html.replace(
+        '<a href="../stories/index.html">Stories</a>',
+        '<a href="../stories/index.html">Stories</a>\n        <a href="/new-gen/">New-Gen</a>'
+    )
+    html = html.replace(
+        '<a href="/stories/index.html">Stories</a>',
+        '<a href="/stories/index.html">Stories</a>\n        <a href="/new-gen/">New-Gen</a>'
+    )
+    return html
+
+
+def fix_paths_for_server(html: str) -> str:
+    """Fix relative paths to absolute paths for server root serving"""
+    # Convert relative nav links to absolute
+    html = html.replace('href="../index.html"', 'href="/"')
+    html = html.replace('href="../categories/', 'href="/categories/')
+    html = html.replace('href="../timeline/', 'href="/timeline/')
+    html = html.replace('href="../stories/', 'href="/stories/')
+    html = html.replace('href="../tweets/', 'href="/tweets/')
+    return html
+
+
+def generate_html_server(output_dir: Path, bookmarks: list[dict], categories_data: dict,
+                         stories_data: dict) -> None:
+    """Generate HTML pages for server deployment with local media paths"""
+    html_dir = output_dir / "html"
+    html_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create subdirectories
+    (html_dir / "categories").mkdir(exist_ok=True)
+    (html_dir / "timeline").mkdir(exist_ok=True)
+    (html_dir / "tweets").mkdir(exist_ok=True)
+    (html_dir / "stories").mkdir(exist_ok=True)
+
+    tweet_lookup = {b["Tweet Id"]: b for b in bookmarks}
+
+    # Generate main index (chronological)
+    print("Generating main index...")
+    sorted_bookmarks = sorted(
+        bookmarks,
+        key=lambda x: parse_tweet_date(x.get("Created At", "")) or datetime.min.replace(tzinfo=None),
+        reverse=True
+    )
+    tweets_html = "\n".join(render_tweet_card(b, categories_data, use_server=True) for b in sorted_bookmarks)
+    content = f'''
+<h1>Twitter Bookmarks</h1>
+<p class="meta">{len(bookmarks)} bookmarks</p>
+<div class="tweet-list">
+{tweets_html}
+</div>
+'''
+    page = HTML_BASE.format(title="Twitter Bookmarks", content=content)
+    page = fix_paths_for_server(page)
+    page = add_newgen_link(page)
+    # For root index, fix remaining relative links
+    page = page.replace('href="/index.html"', 'href="/"')
+    with open(html_dir / "index.html", "w", encoding="utf-8") as f:
+        f.write(page)
+
+    # Generate category index
+    print("Generating category pages...")
+    categories = categories_data.get("categories", {})
+    cat_list_html = ""
+    for cat_id, cat_info in sorted(categories.items(), key=lambda x: x[1].get("name", x[0])):
+        tweet_count = len(cat_info.get("tweet_ids", []))
+        cat_list_html += f'''
+<div class="category-card">
+    <h3><a href="{cat_id}.html">{cat_info.get("name", cat_id)}</a></h3>
+    <p>{cat_info.get("description", "")[:200]}</p>
+    <span class="meta">{tweet_count} bookmarks</span>
+</div>
+'''
+    content = f'''
+<h1>Categories</h1>
+<div class="category-list">
+{cat_list_html}
+</div>
+'''
+    page = HTML_BASE.format(title="Categories", content=content)
+    page = fix_paths_for_server(page)
+    page = add_newgen_link(page)
+    with open(html_dir / "categories" / "index.html", "w", encoding="utf-8") as f:
+        f.write(page)
+
+    # Generate individual category pages
+    for cat_id, cat_info in categories.items():
+        cat_tweets = [tweet_lookup[tid] for tid in cat_info.get("tweet_ids", []) if tid in tweet_lookup]
+        cat_tweets.sort(
+            key=lambda x: parse_tweet_date(x.get("Created At", "")) or datetime.min.replace(tzinfo=None),
+            reverse=True
+        )
+        tweets_html = "\n".join(render_tweet_card(b, categories_data, use_server=True) for b in cat_tweets)
+        content = f'''
+<h1>{cat_info.get("name", cat_id)}</h1>
+<p class="meta">{len(cat_tweets)} bookmarks</p>
+<p>{cat_info.get("description", "")}</p>
+<div class="tweet-list">
+{tweets_html}
+</div>
+'''
+        page = HTML_BASE.format(title=cat_info.get("name", cat_id), content=content)
+        page = fix_paths_for_server(page)
+        page = add_newgen_link(page)
+        with open(html_dir / "categories" / f"{cat_id}.html", "w", encoding="utf-8") as f:
+            f.write(page)
+
+    # Generate stories pages if available
+    if stories_data and stories_data.get("category_years"):
+        print("Generating story pages...")
+        src_stories = MASTER_HTML_DIR / "stories"
+        if src_stories.exists():
+            import shutil as sh
+            dst_stories = html_dir / "stories"
+            if dst_stories.exists():
+                sh.rmtree(dst_stories)
+            sh.copytree(src_stories, dst_stories)
+
+            # Fix paths in copied story files
+            for html_file in dst_stories.glob("**/*.html"):
+                with open(html_file, "r", encoding="utf-8") as f:
+                    content = f.read()
+
+                content = fix_paths_for_server(content)
+                content = add_newgen_link(content)
+                # Fix media paths to absolute server paths
+                content = content.replace('../../../media/', '/media/bookmarks/')
+
+                with open(html_file, "w", encoding="utf-8") as f:
+                    f.write(content)
+
+    print(f"Generated server HTML in {html_dir}")
+
+
+# Output directory for server HTML (can be synced to server)
+SERVER_HTML_DIR = BASE_DIR / "server" / "html"
+
+
+def cmd_publish_server(args: argparse.Namespace) -> None:
+    """Generate HTML for server deployment (to be synced via rsync)"""
+
+    # Check for required data
+    if not MASTER_JSON.exists():
+        print("Error: No bookmarks found. Run 'merge' first.")
+        return
+
+    with open(MASTER_JSON, "r", encoding="utf-8") as f:
+        bookmarks = json.load(f)
+
+    categories_data = {}
+    if MASTER_CATEGORIES.exists():
+        with open(MASTER_CATEGORIES, "r", encoding="utf-8") as f:
+            categories_data = json.load(f)
+
+    stories_data = {}
+    if MASTER_STORIES.exists():
+        with open(MASTER_STORIES, "r", encoding="utf-8") as f:
+            stories_data = json.load(f)
+
+    print("=== Generating HTML for Server Deployment ===")
+
+    # Create server output directory
+    server_dir = BASE_DIR / "server"
+    server_dir.mkdir(exist_ok=True)
+
+    # Generate HTML with server media paths
+    generate_html_server(server_dir, bookmarks, categories_data, stories_data)
+
+    print(f"\n✓ Generated server HTML in {SERVER_HTML_DIR}")
+    print(f"\nTo deploy, sync to server:")
+    print(f"  rsync -avz --delete {SERVER_HTML_DIR}/ user@server:/app/bookmarks-html/")
+    print(f"  rsync -avz --progress {MASTER_MEDIA_DIR}/ user@server:/app/bookmarks-media/")
+
+
 def cmd_publish(args: argparse.Namespace) -> None:
     """Publish HTML with Twitter CDN links to GitHub Pages"""
     import subprocess
@@ -2841,6 +3051,7 @@ def main():
     # Publish commands
     subparsers.add_parser("publish", help="Publish to GitHub Pages (dethele.com/twitter) using Twitter CDN")
     subparsers.add_parser("unpublish", help="Remove from GitHub Pages (DESTRUCTIVE)")
+    subparsers.add_parser("publish-server", help="Generate HTML for server deployment (twitter.dethele.com)")
 
     args = parser.parse_args()
 
@@ -2861,6 +3072,7 @@ def main():
         "stories": cmd_stories,
         "publish": cmd_publish,
         "unpublish": cmd_unpublish,
+        "publish-server": cmd_publish_server,
     }
 
     commands[args.command](args)

@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Profile - Twitter Bookmarks{% endblock %}
+
+{% block content %}
+<div class="profile-container">
+    <h1>Your Profile</h1>
+    <div class="profile-info">
+        <p><strong>Email:</strong> {{ user.email }}</p>
+        <p><strong>Username:</strong> {{ user.username }}</p>
+        <p><strong>Member since:</strong> {{ profile.created_at|date:"F Y" }}</p>
+    </div>
+    
+    <div class="profile-settings">
+        <h2>AI Settings</h2>
+        <form method="post" class="ai-provider-form">
+            {% csrf_token %}
+            <div class="form-group">
+                <label for="ai_provider"><strong>AI Provider for Categorization & Summarization:</strong></label>
+                <select name="ai_provider" id="ai_provider" class="form-control">
+                    <option value="anthropic" {% if profile.ai_provider == 'anthropic' %}selected{% endif %}>
+                        Anthropic Claude
+                    </option>
+                    <option value="openai" {% if profile.ai_provider == 'openai' %}selected{% endif %}>
+                        OpenAI
+                    </option>
+                </select>
+                <small class="form-help">
+                    Choose which AI provider to use for categorizing and summarizing tweets in the curated feed.
+                    <br>
+                    <strong>Anthropic Claude:</strong> Requires ANTHROPIC_API_KEY in .env
+                    <br>
+                    <strong>OpenAI:</strong> Requires OPENAI_API_KEY in .env
+                </small>
+            </div>
+            <button type="submit" class="btn btn-primary">Save Settings</button>
+        </form>
+    </div>
+</div>
+
+<style>
+.profile-container {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.profile-info {
+    background: white;
+    border-radius: 8px;
+    padding: 25px;
+    margin-bottom: 30px;
+    border: 1px solid #e1e8ed;
+}
+
+.profile-info p {
+    margin: 10px 0;
+    font-size: 16px;
+    color: #14171a;
+}
+
+.profile-settings {
+    background: white;
+    border-radius: 8px;
+    padding: 25px;
+    border: 1px solid #e1e8ed;
+}
+
+.profile-settings h2 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    color: #14171a;
+}
+
+.form-group {
+    margin-bottom: 20px;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 8px;
+    color: #14171a;
+}
+
+.form-control {
+    width: 100%;
+    padding: 10px;
+    border: 2px solid #e1e8ed;
+    border-radius: 6px;
+    font-size: 16px;
+    transition: border-color 0.2s;
+}
+
+.form-control:focus {
+    outline: none;
+    border-color: #1da1f2;
+}
+
+.form-help {
+    display: block;
+    margin-top: 8px;
+    color: #657786;
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.btn {
+    display: inline-block;
+    padding: 12px 24px;
+    background: #1da1f2;
+    color: white;
+    border: none;
+    border-radius: 20px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.2s;
+}
+
+.btn-primary {
+    background: #1da1f2;
+}
+
+.btn-primary:hover {
+    background: #1a91da;
+}
+</style>
+{% endblock %}
+
