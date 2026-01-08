@@ -93,6 +93,26 @@ python3 tools/bookmark_merger.py publish-server
 docker-compose -f docker-compose.prod.yml up -d --build
 ```
 
+**Server Maintenance:**
+```bash
+# Clean up Docker resources on server (frees disk space)
+./scripts/cleanup-server.sh
+
+# Resize EC2 disk (live, no reboot needed)
+./scripts/resize-server-disk.sh 60      # Resize to 60GB
+./scripts/resize-server-disk.sh 100     # Resize to 100GB
+
+# Deploy Django app to server
+./scripts/upload-to-aws.sh              # Full deploy with Docker rebuild
+./scripts/deploy-to-production.sh       # Alternative deploy script
+```
+
+**Admin Panel:**
+- `/accounts/admin/` - User management (view users, invite new users)
+- All @dethele.com Google users can view user list and invite
+- Admin (nikolaj@dethele.com) can delete users
+- Invited users set password on first login (8+ chars, not all lowercase)
+
 ## Important Rules
 
 - **Adding new exports**: Use `update` command - it only categorizes NEW bookmarks, preserving existing categorizations and saving API calls.
