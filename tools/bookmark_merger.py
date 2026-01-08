@@ -51,6 +51,7 @@ MASTER_DIR = BASE_DIR / "master"
 MASTER_JSON = MASTER_DIR / "bookmarks.json"
 MASTER_CATEGORIES = MASTER_DIR / "categories.json"
 MASTER_STORIES = MASTER_DIR / "stories.json"
+MASTER_AUTHORS = MASTER_DIR / "authors.json"
 MASTER_MEDIA_DIR = MASTER_DIR / "media"
 MASTER_HTML_DIR = MASTER_DIR / "html"
 MASTER_EXPORTS_DIR = MASTER_DIR / "exports"
@@ -515,6 +516,226 @@ def generate_story(client, stories_data: dict, cat_id: str, year: str,
     }
 
     print(f"  Story complete: {len(events)} events, {len(tweets)} tweets")
+
+
+# ==================== Author Helpers ====================
+
+def build_author_profiles(bookmarks: list[dict]) -> dict:
+    """Extract unique authors with their stats and tweet IDs from bookmarks"""
+    authors = {}
+    for bookmark in bookmarks:
+        screen_name = bookmark.get("User Screen Name", "")
+        if not screen_name:
+            continue
+
+        screen_name_lower = screen_name.lower()
+        if screen_name_lower not in authors:
+            authors[screen_name_lower] = {
+                "name": bookmark.get("User Name", ""),
+                "screen_name": bookmark.get("User Screen Name", ""),
+                "avatar": bookmark.get("User Avatar Url", ""),
+                "description": bookmark.get("User Description", ""),
+                "location": bookmark.get("User Location", ""),
+                "followers": int(bookmark.get("User Followers Count", 0) or 0),
+                "verified": bookmark.get("User Is Blue Verified", "") == "Yes",
+                "tweet_ids": [],
+                "bookmark_count": 0,
+                "category": None,
+                "category_confidence": None,
+                "summary": None
+            }
+        authors[screen_name_lower]["tweet_ids"].append(bookmark.get("Tweet Id", ""))
+        authors[screen_name_lower]["bookmark_count"] += 1
+        # Update followers count if newer bookmark has higher count
+        new_followers = int(bookmark.get("User Followers Count", 0) or 0)
+        if new_followers > authors[screen_name_lower]["followers"]:
+            authors[screen_name_lower]["followers"] = new_followers
+            # Also update other profile info with the latest
+            authors[screen_name_lower]["name"] = bookmark.get("User Name", "")
+            authors[screen_name_lower]["avatar"] = bookmark.get("User Avatar Url", "")
+            authors[screen_name_lower]["description"] = bookmark.get("User Description", "")
+            authors[screen_name_lower]["location"] = bookmark.get("User Location", "")
+            authors[screen_name_lower]["verified"] = bookmark.get("User Is Blue Verified", "") == "Yes"
+
+    return authors
+
+
+def load_authors() -> dict:
+    """Load existing authors data or return empty structure"""
+    if MASTER_AUTHORS.exists():
+        with open(MASTER_AUTHORS, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"generated_at": None, "author_categories": {}, "authors": {}}
+
+
+def save_authors(authors_data: dict) -> None:
+    """Save authors data to JSON"""
+    authors_data["generated_at"] = datetime.now().isoformat()
+    with open(MASTER_AUTHORS, "w", encoding="utf-8") as f:
+        json.dump(authors_data, f, indent=2, ensure_ascii=False)
+
+
+def categorize_authors_ai(client, authors: dict, bookmarks: list[dict], min_bookmarks: int = 3) -> dict:
+    """Use AI to categorize authors into profile types.
+
+    Only categorizes authors with at least min_bookmarks bookmarks.
+    Returns updated authors dict with category, confidence, and summary.
+    """
+    # Build tweet lookup for getting sample tweets
+    tweet_lookup = {b["Tweet Id"]: b for b in bookmarks}
+
+    # Filter to authors with enough bookmarks
+    to_categorize = {k: v for k, v in authors.items() if v["bookmark_count"] >= min_bookmarks}
+    print(f"Authors with {min_bookmarks}+ bookmarks: {len(to_categorize)} (of {len(authors)} total)")
+
+    if not to_categorize:
+        return authors
+
+    # Phase 1: Discover/confirm author categories from top authors
+    print("\nPhase 1: Confirming author category taxonomy...")
+    top_authors = sorted(to_categorize.values(), key=lambda x: x["bookmark_count"], reverse=True)[:50]
+
+    author_samples = []
+    for author in top_authors:
+        sample_tweets = []
+        for tid in author["tweet_ids"][:3]:
+            if tid in tweet_lookup:
+                sample_tweets.append(tweet_lookup[tid].get("Full Text", "")[:150])
+        author_samples.append(
+            f"@{author['screen_name']} ({author['followers']} followers, {author['bookmark_count']} bookmarks)\n"
+            f"  Bio: {author['description'][:200] if author['description'] else 'N/A'}\n"
+            f"  Tweets: {'; '.join(sample_tweets)}"
+        )
+
+    taxonomy_prompt = f"""Analyze these Twitter/X authors from someone's bookmarks and create a category taxonomy.
+
+The categories should help classify author TYPES based on how they use the platform. Use these seed concepts:
+- Scientist/Academic - Researchers, professors, domain experts with credentials
+- Author/Creator - Writers, documentary makers, podcast hosts, focused on specific topics
+- Marketer/Promoter - Revenue-driven, hooks, "follow me for more", newsletter pushers
+- Influencer/Celebrity - Media personalities, product placements, personal brand focus
+- Journalist/Reporter - News coverage, investigative work, media outlets
+- Builder/Founder - Entrepreneurs, startup founders, shipping products
+- Analyst/Commentator - Opinions, takes, commentary on current events
+- Educator/Explainer - Thread writers, explainers, teaching complex topics
+- Curator/Aggregator - Sharing others' content, reposting, curation focus
+
+Feel free to adjust/merge/rename these categories based on the actual authors.
+
+Return JSON only, no other text:
+{{
+  "categories": {{
+    "category-id": {{
+      "name": "Human Readable Name",
+      "description": "Brief description of what this type of author does"
+    }}
+  }}
+}}
+
+AUTHORS:
+{chr(10).join(author_samples)}
+"""
+
+    response = client.messages.create(
+        model="claude-sonnet-4-20250514",
+        max_tokens=2000,
+        messages=[{"role": "user", "content": taxonomy_prompt}]
+    )
+
+    try:
+        taxonomy_text = response.content[0].text
+        if "```json" in taxonomy_text:
+            taxonomy_text = taxonomy_text.split("```json")[1].split("```")[0]
+        elif "```" in taxonomy_text:
+            taxonomy_text = taxonomy_text.split("```")[1].split("```")[0]
+        taxonomy = json.loads(taxonomy_text)
+        author_categories = taxonomy.get("categories", {})
+    except (json.JSONDecodeError, IndexError) as e:
+        print(f"Error parsing taxonomy: {e}")
+        print(f"Response: {response.content[0].text[:500]}")
+        # Use default categories
+        author_categories = {
+            "scientist-academic": {"name": "Scientist/Academic", "description": "Researchers, professors, domain experts"},
+            "author-creator": {"name": "Author/Creator", "description": "Writers, documentary makers, podcast hosts"},
+            "marketer-promoter": {"name": "Marketer/Promoter", "description": "Revenue-driven, promotional content"},
+            "influencer-celebrity": {"name": "Influencer/Celebrity", "description": "Media personalities, personal brands"},
+            "journalist-reporter": {"name": "Journalist/Reporter", "description": "News coverage, investigative work"},
+            "builder-founder": {"name": "Builder/Founder", "description": "Entrepreneurs, startup founders"},
+            "analyst-commentator": {"name": "Analyst/Commentator", "description": "Opinions, commentary on events"},
+            "educator-explainer": {"name": "Educator/Explainer", "description": "Thread writers, teaching complex topics"},
+            "curator-aggregator": {"name": "Curator/Aggregator", "description": "Sharing others' content, curation"}
+        }
+
+    print(f"Using {len(author_categories)} author categories:")
+    for cat_id, cat_info in author_categories.items():
+        print(f"  - {cat_id}: {cat_info.get('name', cat_id)}")
+
+    # Phase 2: Categorize authors in batches
+    print("\nPhase 2: Categorizing authors...")
+    category_list = ", ".join(author_categories.keys())
+    authors_list = list(to_categorize.items())
+    batch_size = 20
+
+    for i in range(0, len(authors_list), batch_size):
+        batch = authors_list[i:i + batch_size]
+        print(f"Processing batch {i // batch_size + 1}/{(len(authors_list) + batch_size - 1) // batch_size}...")
+
+        batch_prompt = f"""Categorize these Twitter/X authors. Available categories: {category_list}
+
+For each author, provide:
+1. category: The best-fit category ID
+2. confidence: "high", "medium", or "low"
+3. summary: A 1-sentence description of this author (what they're known for, their focus area)
+
+Return JSON only:
+{{
+  "screen_name": {{
+    "category": "category-id",
+    "confidence": "high|medium|low",
+    "summary": "One sentence description"
+  }}
+}}
+
+AUTHORS:
+"""
+        for screen_name, author in batch:
+            # Get sample tweets
+            sample_tweets = []
+            for tid in author["tweet_ids"][:5]:
+                if tid in tweet_lookup:
+                    sample_tweets.append(tweet_lookup[tid].get("Full Text", "")[:100])
+
+            batch_prompt += f"\n@{author['screen_name']} ({author['followers']} followers, {author['bookmark_count']} bookmarks)"
+            batch_prompt += f"\n  Bio: {author['description'][:200] if author['description'] else 'N/A'}"
+            if sample_tweets:
+                batch_prompt += f"\n  Sample tweets: {'; '.join(sample_tweets)}"
+            batch_prompt += "\n"
+
+        response = client.messages.create(
+            model="claude-sonnet-4-20250514",
+            max_tokens=3000,
+            messages=[{"role": "user", "content": batch_prompt}]
+        )
+
+        try:
+            result_text = response.content[0].text
+            if "```json" in result_text:
+                result_text = result_text.split("```json")[1].split("```")[0]
+            elif "```" in result_text:
+                result_text = result_text.split("```")[1].split("```")[0]
+            batch_results = json.loads(result_text)
+
+            for screen_name_key, categorization in batch_results.items():
+                # Match screen name (case-insensitive)
+                screen_name_lower = screen_name_key.lstrip("@").lower()
+                if screen_name_lower in authors:
+                    authors[screen_name_lower]["category"] = categorization.get("category")
+                    authors[screen_name_lower]["category_confidence"] = categorization.get("confidence")
+                    authors[screen_name_lower]["summary"] = categorization.get("summary")
+        except (json.JSONDecodeError, IndexError) as e:
+            print(f"  Warning: Error parsing batch: {e}")
+
+    return authors, author_categories
 
 
 def cmd_categorize(args: argparse.Namespace) -> None:
@@ -1141,6 +1362,7 @@ HTML_BASE = """<!DOCTYPE html>
         <a href="../categories/index.html">Categories</a>
         <a href="../timeline/index.html">Timeline</a>
         <a href="../stories/index.html">Stories</a>
+        <a href="../authors/index.html">Authors</a>
     </nav>
     {content}
     <script>
@@ -1590,6 +1812,246 @@ def build_search_index(bookmarks: list[dict], show_progress: bool = True) -> dic
             "profiles": [f"@{p}" for p in top_profiles]
         }
     }
+
+
+# ==================== Author HTML Generation ====================
+
+def generate_authors_html(authors_data: dict, bookmarks: list[dict]) -> None:
+    """Generate authors listing pages"""
+    authors_dir = MASTER_HTML_DIR / "authors"
+    authors_dir.mkdir(parents=True, exist_ok=True)
+
+    authors = authors_data.get("authors", {})
+    author_categories = authors_data.get("author_categories", {})
+    tweet_lookup = {b["Tweet Id"]: b for b in bookmarks}
+
+    # Sort authors alphabetically by screen_name
+    sorted_authors = sorted(authors.values(), key=lambda x: x["screen_name"].lower())
+
+    # Build category filter buttons
+    category_counts = defaultdict(int)
+    for author in authors.values():
+        cat = author.get("category")
+        if cat:
+            category_counts[cat] += 1
+        else:
+            category_counts["uncategorized"] += 1
+
+    filter_buttons = ['<button class="filter-btn active" onclick="filterAuthors(\'all\')">All</button>']
+    for cat_id in sorted(author_categories.keys()):
+        count = category_counts.get(cat_id, 0)
+        if count > 0:
+            cat_name = author_categories[cat_id].get("name", cat_id)
+            filter_buttons.append(
+                f'<button class="filter-btn" onclick="filterAuthors(\'{cat_id}\')">{cat_name} ({count})</button>'
+            )
+    if category_counts.get("uncategorized", 0) > 0:
+        filter_buttons.append(
+            f'<button class="filter-btn" onclick="filterAuthors(\'uncategorized\')">Uncategorized ({category_counts["uncategorized"]})</button>'
+        )
+
+    # Build author cards
+    author_cards = []
+    for author in sorted_authors:
+        cat = author.get("category") or "uncategorized"
+        cat_name = author_categories.get(cat, {}).get("name", "Uncategorized") if cat != "uncategorized" else "Uncategorized"
+
+        # Category badge
+        cat_badge = f'<span class="category-tag">{cat_name}</span>' if cat != "uncategorized" else '<span class="category-tag" style="background: var(--secondary);">Uncategorized</span>'
+
+        # Verified badge
+        verified_badge = ' <span style="color: #1d9bf0;">&#10003;</span>' if author.get("verified") else ""
+
+        # Summary or bio snippet
+        summary = author.get("summary") or (author.get("description", "")[:100] + "..." if len(author.get("description", "")) > 100 else author.get("description", ""))
+
+        author_cards.append(f'''
+<div class="author-card" data-category="{cat}" data-name="{author['screen_name'].lower()}">
+    <div class="author-header">
+        <img class="avatar" src="{author.get('avatar', '')}" alt="{author['name']}" onerror="this.style.display='none'">
+        <div class="author-info">
+            <div class="author-name">{author['name']}{verified_badge}</div>
+            <div class="author-handle">
+                <a href="https://x.com/{author['screen_name']}" target="_blank">@{author['screen_name']}</a>
+            </div>
+        </div>
+        <div class="author-stats">
+            <span>{author['bookmark_count']} bookmarks</span>
+            <span>{author['followers']:,} followers</span>
+        </div>
+    </div>
+    <div class="author-summary">{summary}</div>
+    <div class="author-meta">
+        {cat_badge}
+        <a href="{author['screen_name'].lower()}.html">{author['bookmark_count']} bookmarked tweets</a>
+    </div>
+</div>
+''')
+
+    # Additional CSS for authors page
+    authors_css = '''
+        .author-card {
+            background: var(--card-bg);
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+        .author-header {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 10px;
+        }
+        .author-stats {
+            margin-left: auto;
+            text-align: right;
+            color: var(--secondary);
+            font-size: 0.85em;
+        }
+        .author-stats span {
+            display: block;
+        }
+        .author-summary {
+            color: var(--secondary);
+            font-size: 0.9em;
+            margin-bottom: 10px;
+        }
+        .author-meta {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .author-search {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--card-bg);
+            color: var(--text);
+            font-size: 1em;
+        }
+    '''
+
+    content = f'''
+<style>{authors_css}</style>
+<h1>Authors</h1>
+<p class="meta">{len(authors)} authors whose tweets you've bookmarked</p>
+
+<input type="text" class="author-search" id="authorSearch" placeholder="Search authors..." oninput="searchAuthors(this.value)">
+
+<div class="filter-bar">
+    {chr(10).join(filter_buttons)}
+</div>
+
+<div id="authorList">
+{chr(10).join(author_cards)}
+</div>
+
+<script>
+function filterAuthors(category) {{
+    const cards = document.querySelectorAll('.author-card');
+    const buttons = document.querySelectorAll('.filter-btn');
+
+    buttons.forEach(btn => btn.classList.remove('active'));
+    event.target.classList.add('active');
+
+    cards.forEach(card => {{
+        if (category === 'all' || card.dataset.category === category) {{
+            card.style.display = 'block';
+        }} else {{
+            card.style.display = 'none';
+        }}
+    }});
+}}
+
+function searchAuthors(query) {{
+    const cards = document.querySelectorAll('.author-card');
+    const lowerQuery = query.toLowerCase();
+
+    cards.forEach(card => {{
+        const name = card.dataset.name;
+        const text = card.textContent.toLowerCase();
+        if (name.includes(lowerQuery) || text.includes(lowerQuery)) {{
+            card.style.display = 'block';
+        }} else {{
+            card.style.display = 'none';
+        }}
+    }});
+
+    // Reset filter buttons
+    document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
+    document.querySelector('.filter-btn').classList.add('active');
+}}
+</script>
+'''
+
+    page_html = HTML_BASE.format(title="Authors", content=content)
+    with open(authors_dir / "index.html", "w", encoding="utf-8") as f:
+        f.write(page_html)
+
+    print(f"Generated authors/index.html with {len(authors)} authors")
+
+    # Generate individual author pages (for authors with 5+ bookmarks)
+    significant_authors = [a for a in authors.values() if a["bookmark_count"] >= 5]
+    for author in significant_authors:
+        generate_author_page(author, tweet_lookup, author_categories, authors_dir)
+
+    print(f"Generated {len(significant_authors)} individual author pages")
+
+
+def generate_author_page(author: dict, tweet_lookup: dict, author_categories: dict, authors_dir: Path) -> None:
+    """Generate individual author page with their bookmarked tweets"""
+    screen_name = author["screen_name"].lower()
+    cat = author.get("category") or "uncategorized"
+    cat_name = author_categories.get(cat, {}).get("name", "Uncategorized") if cat != "uncategorized" else "Uncategorized"
+
+    # Get tweets for this author
+    tweets = [tweet_lookup[tid] for tid in author["tweet_ids"] if tid in tweet_lookup]
+    tweets.sort(
+        key=lambda x: parse_tweet_date(x.get("Created At", "")) or datetime.min.replace(tzinfo=None),
+        reverse=True
+    )
+
+    # Render tweet cards
+    tweets_html = "\n".join(render_tweet_card(t, None, include_detail_link=True) for t in tweets)
+
+    # Verified badge
+    verified_badge = ' <span style="color: #1d9bf0;">&#10003;</span>' if author.get("verified") else ""
+
+    # Category badge
+    cat_badge = f'<span class="category-tag">{cat_name}</span>'
+
+    content = f'''
+<div class="author-profile">
+    <div class="tweet-header">
+        <img class="avatar" src="{author.get('avatar', '')}" alt="{author['name']}" onerror="this.style.display='none'">
+        <div class="author-info">
+            <div class="author-name">{author['name']}{verified_badge}</div>
+            <div class="author-handle">
+                <a href="https://x.com/{author['screen_name']}" target="_blank">@{author['screen_name']}</a>
+            </div>
+        </div>
+    </div>
+    <p style="margin: 10px 0;">{author.get('description', '')}</p>
+    <div style="color: var(--secondary); font-size: 0.9em; margin-bottom: 10px;">
+        {author['followers']:,} followers | {author.get('location', '') or 'Location unknown'}
+    </div>
+    <div style="margin-bottom: 20px;">
+        {cat_badge}
+        {f'<p style="font-style: italic; margin-top: 5px;">{author.get("summary", "")}</p>' if author.get("summary") else ""}
+    </div>
+</div>
+
+<h2>{len(tweets)} Bookmarked Tweets</h2>
+<div class="tweet-list">
+{tweets_html}
+</div>
+'''
+
+    page_html = HTML_BASE.format(title=f"@{author['screen_name']} - Authors", content=content)
+    with open(authors_dir / f"{screen_name}.html", "w", encoding="utf-8") as f:
+        f.write(page_html)
 
 
 # ==================== Story HTML Generation ====================
@@ -3077,6 +3539,96 @@ def cmd_stories(args: argparse.Namespace) -> None:
     print("Run 'generate' to create HTML pages.")
 
 
+def cmd_authors(args: argparse.Namespace) -> None:
+    """Manage author profiles and AI categorization"""
+    subcommand = getattr(args, 'authors_command', None)
+
+    # Load bookmarks
+    if not MASTER_JSON.exists():
+        print("Master JSON not found. Run 'merge' first.")
+        return
+
+    with open(MASTER_JSON, "r", encoding="utf-8") as f:
+        bookmarks = json.load(f)
+
+    print(f"Loaded {len(bookmarks)} bookmarks")
+
+    # Build author profiles from bookmarks
+    print("Building author profiles...")
+    authors = build_author_profiles(bookmarks)
+    print(f"Found {len(authors)} unique authors")
+
+    # Load existing authors data to preserve categorizations
+    existing_data = load_authors()
+    existing_authors = existing_data.get("authors", {})
+    existing_categories = existing_data.get("author_categories", {})
+
+    # Merge with existing categorizations
+    for screen_name, author in authors.items():
+        if screen_name in existing_authors:
+            existing = existing_authors[screen_name]
+            author["category"] = existing.get("category")
+            author["category_confidence"] = existing.get("category_confidence")
+            author["summary"] = existing.get("summary")
+
+    if subcommand == "categorize" or subcommand is None:
+        # Run AI categorization
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            print("Error: ANTHROPIC_API_KEY environment variable not set")
+            print("Set it with: export ANTHROPIC_API_KEY='your-key-here'")
+            if subcommand == "categorize":
+                return
+        else:
+            try:
+                import anthropic
+                client = anthropic.Anthropic(api_key=api_key)
+
+                min_bookmarks = getattr(args, 'min_bookmarks', 3)
+                print(f"\n=== Categorizing authors with {min_bookmarks}+ bookmarks ===")
+                authors, author_categories = categorize_authors_ai(client, authors, bookmarks, min_bookmarks)
+
+                # Save authors data
+                authors_data = {
+                    "generated_at": datetime.now().isoformat(),
+                    "author_categories": author_categories,
+                    "authors": authors
+                }
+                save_authors(authors_data)
+                print(f"\nAuthors saved to {MASTER_AUTHORS}")
+
+                # Stats
+                categorized = sum(1 for a in authors.values() if a.get("category"))
+                print(f"Categorized: {categorized}/{len(authors)} authors")
+
+            except ImportError:
+                print("Error: anthropic package not installed")
+                print("Install with: pip install anthropic")
+                if subcommand == "categorize":
+                    return
+
+    if subcommand == "generate" or subcommand is None:
+        # Generate HTML pages
+        print("\n=== Generating author pages ===")
+
+        # Make sure we have authors data
+        if not MASTER_AUTHORS.exists():
+            # Save what we have even without categorization
+            authors_data = {
+                "generated_at": datetime.now().isoformat(),
+                "author_categories": existing_categories,
+                "authors": authors
+            }
+            save_authors(authors_data)
+
+        with open(MASTER_AUTHORS, "r", encoding="utf-8") as f:
+            authors_data = json.load(f)
+
+        generate_authors_html(authors_data, bookmarks)
+
+    print("\n=== Authors complete ===")
+
+
 def cmd_all(args: argparse.Namespace) -> None:
     """Run merge, consolidate, generate, and export"""
     cmd_merge(args)
@@ -3145,6 +3697,7 @@ def generate_html_cdn(output_dir: Path, bookmarks: list[dict], categories_data: 
     (html_dir / "timeline").mkdir(exist_ok=True)
     (html_dir / "tweets").mkdir(exist_ok=True)
     (html_dir / "stories").mkdir(exist_ok=True)
+    (html_dir / "authors").mkdir(exist_ok=True)
 
     tweet_lookup = {b["Tweet Id"]: b for b in bookmarks}
     timeline_data = build_category_timeline(bookmarks, categories_data)
@@ -3260,19 +3813,24 @@ def generate_html_cdn(output_dir: Path, bookmarks: list[dict], categories_data: 
 
 def add_newgen_link(html: str) -> str:
     """Add 'New-Gen' link to navbar for server version"""
-    # Add New-Gen link after Stories link (handles both relative and absolute paths)
+    # Add New-Gen link after Authors link (handles both relative and absolute paths)
     html = html.replace(
-        '<a href="../stories/index.html">Stories</a>',
-        '<a href="../stories/index.html">Stories</a>\n        <a href="/new-gen/">New-Gen</a>'
+        '<a href="../authors/index.html">Authors</a>',
+        '<a href="../authors/index.html">Authors</a>\n        <a href="/new-gen/">New-Gen</a>'
     )
     html = html.replace(
-        '<a href="/stories/index.html">Stories</a>',
-        '<a href="/stories/index.html">Stories</a>\n        <a href="/new-gen/">New-Gen</a>'
+        '<a href="/authors/index.html">Authors</a>',
+        '<a href="/authors/index.html">Authors</a>\n        <a href="/new-gen/">New-Gen</a>'
     )
-    # Handle stories pages where Stories link is self-referential
+    # Handle authors pages where Authors link is self-referential
     html = html.replace(
-        '<a href="index.html">Stories</a>',
-        '<a href="index.html">Stories</a>\n        <a href="/new-gen/">New-Gen</a>'
+        '<a href="index.html">Authors</a>',
+        '<a href="index.html">Authors</a>\n        <a href="/new-gen/">New-Gen</a>'
+    )
+    # Also handle stories pages that haven't been regenerated yet
+    html = html.replace(
+        '<a href="../stories/index.html">Stories</a>\n        <a href="../authors/index.html">Authors</a>',
+        '<a href="../stories/index.html">Stories</a>\n        <a href="../authors/index.html">Authors</a>\n        <a href="/new-gen/">New-Gen</a>'
     )
     return html
 
@@ -3284,6 +3842,7 @@ def fix_paths_for_server(html: str) -> str:
     html = html.replace('href="../categories/', 'href="/categories/')
     html = html.replace('href="../timeline/', 'href="/timeline/')
     html = html.replace('href="../stories/', 'href="/stories/')
+    html = html.replace('href="../authors/', 'href="/authors/')
     html = html.replace('href="../tweets/', 'href="/tweets/')
     return html
 
@@ -3299,6 +3858,7 @@ def generate_html_server(output_dir: Path, bookmarks: list[dict], categories_dat
     (html_dir / "timeline").mkdir(exist_ok=True)
     (html_dir / "tweets").mkdir(exist_ok=True)
     (html_dir / "stories").mkdir(exist_ok=True)
+    (html_dir / "authors").mkdir(exist_ok=True)
 
     tweet_lookup = {b["Tweet Id"]: b for b in bookmarks}
 
@@ -3745,6 +4305,29 @@ document.querySelectorAll('.year-link').forEach(link => {{
             with open(html_file, "w", encoding="utf-8") as f:
                 f.write(content)
 
+    # Copy authors from master (already generated with correct structure)
+    src_authors = MASTER_HTML_DIR / "authors"
+    if src_authors.exists():
+        print("Copying authors pages...")
+        import shutil as sh
+        dst_authors = html_dir / "authors"
+        if dst_authors.exists():
+            sh.rmtree(dst_authors)
+        sh.copytree(src_authors, dst_authors)
+
+        # Fix paths in authors files
+        for html_file in dst_authors.glob("**/*.html"):
+            with open(html_file, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            content = fix_paths_for_server(content)
+            content = add_newgen_link(content)
+            # Fix media paths
+            content = content.replace('../../media/', '/media/bookmarks/')
+
+            with open(html_file, "w", encoding="utf-8") as f:
+                f.write(content)
+
     print(f"Generated server HTML in {html_dir}")
 
 
@@ -3953,6 +4536,11 @@ def main():
     stories_parser.add_argument("--min-tweets", type=int, default=10, help="Minimum tweets for story (default: 10)")
     stories_parser.add_argument("--category", type=str, help="Generate for specific category only")
 
+    # Authors command with subcommands
+    authors_parser = subparsers.add_parser("authors", help="Manage author profiles and AI categorization")
+    authors_parser.add_argument("authors_command", nargs="?", choices=["categorize", "generate"], help="Subcommand (default: both)")
+    authors_parser.add_argument("--min-bookmarks", type=int, default=3, help="Minimum bookmarks for AI categorization (default: 3)")
+
     # Publish commands
     subparsers.add_parser("publish", help="Publish to GitHub Pages (dethele.com/twitter) using Twitter CDN")
     subparsers.add_parser("unpublish", help="Remove from GitHub Pages (DESTRUCTIVE)")
@@ -3976,6 +4564,7 @@ def main():
         "cleanup-raw": cmd_cleanup_raw,
         "all": cmd_all,
         "stories": cmd_stories,
+        "authors": cmd_authors,
         "publish": cmd_publish,
         "unpublish": cmd_unpublish,
         "publish-server": cmd_publish_server,
