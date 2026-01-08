@@ -1,0 +1,240 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}User Management - Twitter Bookmarks{% endblock %}
+
+{% block content %}
+<div class="admin-container">
+    <h1>User Management</h1>
+
+    <!-- Invite User Form -->
+    <div class="admin-section">
+        <h2>Invite New User</h2>
+        <form method="post" action="{% url 'invite_user' %}" class="invite-form">
+            {% csrf_token %}
+            <div class="form-row">
+                <input type="email" name="email" placeholder="Enter email address" required class="form-control">
+                <button type="submit" class="btn btn-primary">Send Invitation</button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Pending Invitations -->
+    {% if pending_invitations %}
+    <div class="admin-section">
+        <h2>Pending Invitations</h2>
+        <table class="admin-table">
+            <thead>
+                <tr>
+                    <th>Email</th>
+                    <th>Invited By</th>
+                    <th>Created</th>
+                    <th>Expires</th>
+                    {% if is_admin %}<th>Actions</th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for invitation in pending_invitations %}
+                <tr class="{% if invitation.is_expired %}expired{% endif %}">
+                    <td>{{ invitation.email }}</td>
+                    <td>{{ invitation.invited_by.email|default:"Unknown" }}</td>
+                    <td>{{ invitation.created_at|date:"M d, Y H:i" }}</td>
+                    <td>
+                        {% if invitation.is_expired %}
+                            <span class="status-expired">Expired</span>
+                        {% else %}
+                            {{ invitation.expires_at|date:"M d, Y" }}
+                        {% endif %}
+                    </td>
+                    {% if is_admin %}
+                    <td>
+                        <form method="post" action="{% url 'delete_invitation' invitation.id %}" style="display:inline;">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-danger btn-small" onclick="return confirm('Delete invitation for {{ invitation.email }}?')">Delete</button>
+                        </form>
+                    </td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {% endif %}
+
+    <!-- User List -->
+    <div class="admin-section">
+        <h2>Registered Users ({{ users|length }})</h2>
+        <table class="admin-table">
+            <thead>
+                <tr>
+                    <th>Email</th>
+                    <th>Joined</th>
+                    <th>Role</th>
+                    {% if is_admin %}<th>Actions</th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in users %}
+                <tr>
+                    <td>
+                        {{ u.email }}
+                        {% if u == user %}<span class="you-badge">(You)</span>{% endif %}
+                    </td>
+                    <td>{{ u.date_joined|date:"M d, Y" }}</td>
+                    <td>
+                        {% if u.profile.is_admin %}
+                            <span class="role-admin">Admin</span>
+                        {% else %}
+                            <span class="role-user">User</span>
+                        {% endif %}
+                    </td>
+                    {% if is_admin %}
+                    <td>
+                        {% if u != user %}
+                        <form method="post" action="{% url 'delete_user' u.id %}" style="display:inline;">
+                            {% csrf_token %}
+                            <button type="submit" class="btn btn-danger btn-small" onclick="return confirm('Delete user {{ u.email }}? This cannot be undone.')">Delete</button>
+                        </form>
+                        {% else %}
+                        <span class="text-muted">-</span>
+                        {% endif %}
+                    </td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+
+<style>
+.admin-container {
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 20px;
+}
+
+.admin-section {
+    background: white;
+    border-radius: 8px;
+    padding: 25px;
+    margin-bottom: 25px;
+    border: 1px solid #e1e8ed;
+}
+
+.admin-section h2 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    color: #14171a;
+    font-size: 18px;
+}
+
+.invite-form .form-row {
+    display: flex;
+    gap: 10px;
+}
+
+.invite-form .form-control {
+    flex: 1;
+    padding: 10px 15px;
+    border: 2px solid #e1e8ed;
+    border-radius: 6px;
+    font-size: 16px;
+}
+
+.invite-form .form-control:focus {
+    outline: none;
+    border-color: #1da1f2;
+}
+
+.admin-table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.admin-table th,
+.admin-table td {
+    padding: 12px 15px;
+    text-align: left;
+    border-bottom: 1px solid #e1e8ed;
+}
+
+.admin-table th {
+    background: #f7f9fa;
+    font-weight: 600;
+    color: #657786;
+    font-size: 14px;
+}
+
+.admin-table tr:hover {
+    background: #f7f9fa;
+}
+
+.admin-table tr.expired {
+    opacity: 0.6;
+}
+
+.btn {
+    display: inline-block;
+    padding: 10px 20px;
+    background: #1da1f2;
+    color: white;
+    border: none;
+    border-radius: 20px;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: none;
+    transition: background 0.2s;
+    font-size: 14px;
+}
+
+.btn-primary:hover {
+    background: #1a91da;
+}
+
+.btn-danger {
+    background: #e0245e;
+}
+
+.btn-danger:hover {
+    background: #c51f53;
+}
+
+.btn-small {
+    padding: 6px 12px;
+    font-size: 12px;
+}
+
+.role-admin {
+    background: #17bf63;
+    color: white;
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.role-user {
+    background: #657786;
+    color: white;
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+}
+
+.status-expired {
+    color: #e0245e;
+    font-weight: 600;
+}
+
+.you-badge {
+    color: #1da1f2;
+    font-size: 12px;
+    margin-left: 5px;
+}
+
+.text-muted {
+    color: #aab8c2;
+}
+</style>
+{% endblock %}
