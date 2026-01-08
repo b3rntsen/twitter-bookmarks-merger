@@ -56,6 +56,104 @@ MASTER_MEDIA_DIR = MASTER_DIR / "media"
 MASTER_HTML_DIR = MASTER_DIR / "html"
 MASTER_EXPORTS_DIR = MASTER_DIR / "exports"
 
+# Synonym dictionary for search expansion
+SYNONYMS_DICT = {
+    "ai": ["artificial intelligence", "machine learning", "ml", "neural", "gpt", "llm", "chatgpt", "claude"],
+    "robot": ["robotics", "humanoid", "bot", "automation", "robo", "robotic"],
+    "ukraine": ["ukrainian", "kyiv", "kiev", "zelensky", "zelenskyy"],
+    "russia": ["russian", "putin", "moscow", "kremlin"],
+    "tech": ["technology", "software", "hardware", "digital", "computing"],
+    "code": ["coding", "programming", "developer", "software", "github"],
+    "data": ["database", "analytics", "dataset", "datasets"],
+    "model": ["models", "modeling", "llm", "neural network"],
+    "agent": ["agents", "agentic", "autonomous"],
+    "video": ["videos", "clip", "footage"],
+    "image": ["images", "photo", "picture", "visual"],
+    "war": ["warfare", "military", "conflict", "battle"],
+    "science": ["scientific", "research", "study", "scientist"],
+    "company": ["companies", "startup", "startups", "corporation", "firm"],
+    "product": ["products", "launch", "release", "shipped"],
+}
+
+# Search module JavaScript (embedded in pages)
+SEARCH_MODULE_JS = '''
+const SearchModule = {
+    fuzzyEnabled: false,
+    synonyms: SYNONYMS,
+
+    stem(word) {
+        word = word.toLowerCase();
+        if (word.length < 4) return word;
+        const suffixes = ['tion', 'ment', 'ness', 'ing', 'ed', 'ly', 'es', 's'];
+        for (const suffix of suffixes) {
+            if (word.endsWith(suffix) && word.length > suffix.length + 2) {
+                return word.slice(0, -suffix.length);
+            }
+        }
+        return word;
+    },
+
+    levenshtein(a, b) {
+        const matrix = Array(b.length + 1).fill(null).map(() => Array(a.length + 1).fill(null));
+        for (let i = 0; i <= a.length; i++) matrix[0][i] = i;
+        for (let j = 0; j <= b.length; j++) matrix[j][0] = j;
+        for (let j = 1; j <= b.length; j++) {
+            for (let i = 1; i <= a.length; i++) {
+                const cost = a[i-1] === b[j-1] ? 0 : 1;
+                matrix[j][i] = Math.min(matrix[j][i-1] + 1, matrix[j-1][i] + 1, matrix[j-1][i-1] + cost);
+            }
+        }
+        return matrix[b.length][a.length];
+    },
+
+    similarity(a, b) {
+        const maxLen = Math.max(a.length, b.length);
+        if (maxLen === 0) return 1;
+        return 1 - this.levenshtein(a, b) / maxLen;
+    },
+
+    wordMatches(query, target, fuzzyThreshold = 0.75) {
+        query = query.toLowerCase();
+        target = target.toLowerCase();
+        if (target === query) return true;
+        if (target.startsWith(query) || query.startsWith(target)) return true;
+        if (this.stem(target) === this.stem(query)) return true;
+        if (this.fuzzyEnabled && query.length >= 3) {
+            return this.similarity(query, target) >= fuzzyThreshold;
+        }
+        return false;
+    },
+
+    expandQuery(query) {
+        const words = query.toLowerCase().split(/\\s+/).filter(w => w.length > 0);
+        const expanded = new Set(words);
+        for (const word of words) {
+            for (const [key, syns] of Object.entries(this.synonyms)) {
+                if (word === key || syns.includes(word)) {
+                    expanded.add(key);
+                    syns.forEach(s => expanded.add(s));
+                }
+            }
+        }
+        return Array.from(expanded);
+    },
+
+    matches(text, query) {
+        if (!query || !text) return !query;
+        text = text.toLowerCase();
+        const queryTerms = this.expandQuery(query);
+        const textWords = text.split(/\\s+/);
+        return queryTerms.some(term => {
+            if (text.includes(term)) return true;
+            if (this.fuzzyEnabled) {
+                return textWords.some(word => this.wordMatches(term, word));
+            }
+            return false;
+        });
+    }
+};
+'''
+
 
 def load_all_json_files() -> list[dict]:
     """Load all JSON bookmark files from raw/json/"""
@@ -1019,7 +1117,9 @@ HTML_BASE = """<!DOCTYPE html>
         }}
         .tweet-media video {{
             max-width: 100%;
+            min-height: 200px;
             border-radius: 12px;
+            background: #1a1a2e;
         }}
         .video-thumbnail {{
             display: inline-block;
@@ -1048,6 +1148,35 @@ HTML_BASE = """<!DOCTYPE html>
         .video-label {{
             color: #8899a6;
             font-size: 0.9em;
+        }}
+        .video-thumbnail-wrapper {{
+            position: relative;
+            display: inline-block;
+            cursor: pointer;
+            max-width: 100%;
+        }}
+        .video-thumbnail-wrapper .video-thumb {{
+            max-width: 100%;
+            border-radius: 12px;
+            display: block;
+        }}
+        .video-play-overlay {{
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 60px;
+            height: 60px;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: transform 0.2s, background 0.2s;
+        }}
+        .video-thumbnail-wrapper:hover .video-play-overlay {{
+            transform: translate(-50%, -50%) scale(1.1);
+            background: rgba(29, 155, 240, 0.9);
         }}
         .tweet-stats {{
             color: var(--secondary);
@@ -1090,6 +1219,24 @@ HTML_BASE = """<!DOCTYPE html>
         }}
         .search-container {{
             position: relative;
+        }}
+        .search-options {{
+            display: flex;
+            gap: 15px;
+            margin-bottom: 15px;
+            font-size: 0.9em;
+        }}
+        .search-options label {{
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            cursor: pointer;
+            color: var(--secondary);
+        }}
+        .search-options input[type="checkbox"] {{
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
         }}
         .search-results {{
             color: var(--secondary);
@@ -1933,12 +2080,20 @@ def generate_authors_html(authors_data: dict, bookmarks: list[dict]) -> None:
         }
     '''
 
+    synonyms_json = json.dumps(SYNONYMS_DICT)
+
     content = f'''
 <style>{authors_css}</style>
 <h1>Authors</h1>
-<p class="meta">{len(authors)} authors whose tweets you've bookmarked</p>
+<p class="meta"><span id="visible-count">{len(authors)}</span> of {len(authors)} authors whose tweets you've bookmarked</p>
 
-<input type="text" class="author-search" id="authorSearch" placeholder="Search authors..." oninput="searchAuthors(this.value)">
+<div class="search-container">
+    <input type="text" class="search-box" id="authorSearch" placeholder="Search authors..." autocomplete="off">
+    <div class="search-options">
+        <label><input type="checkbox" id="fuzzy-toggle"> Fuzzy matching</label>
+    </div>
+</div>
+<div id="search-results" class="search-results hidden"></div>
 
 <div class="filter-bar">
     {chr(10).join(filter_buttons)}
@@ -1949,39 +2104,66 @@ def generate_authors_html(authors_data: dict, bookmarks: list[dict]) -> None:
 </div>
 
 <script>
-function filterAuthors(category) {{
-    const cards = document.querySelectorAll('.author-card');
-    const buttons = document.querySelectorAll('.filter-btn');
+const SYNONYMS = {synonyms_json};
+{SEARCH_MODULE_JS}
 
+let currentCategory = 'all';
+let currentQuery = '';
+
+// Setup fuzzy toggle
+document.getElementById('fuzzy-toggle').addEventListener('change', function() {{
+    SearchModule.fuzzyEnabled = this.checked;
+    applyFilters();
+}});
+
+// Setup search input
+const searchInput = document.getElementById('authorSearch');
+let searchTimeout = null;
+searchInput.addEventListener('input', function() {{
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {{
+        currentQuery = this.value.trim();
+        applyFilters();
+    }}, 200);
+}});
+
+function filterAuthors(category) {{
+    const buttons = document.querySelectorAll('.filter-btn');
     buttons.forEach(btn => btn.classList.remove('active'));
     event.target.classList.add('active');
-
-    cards.forEach(card => {{
-        if (category === 'all' || card.dataset.category === category) {{
-            card.style.display = 'block';
-        }} else {{
-            card.style.display = 'none';
-        }}
-    }});
+    currentCategory = category;
+    applyFilters();
 }}
 
-function searchAuthors(query) {{
+function applyFilters() {{
     const cards = document.querySelectorAll('.author-card');
-    const lowerQuery = query.toLowerCase();
+    const resultsDiv = document.getElementById('search-results');
+    let visibleCount = 0;
 
     cards.forEach(card => {{
         const name = card.dataset.name;
-        const text = card.textContent.toLowerCase();
-        if (name.includes(lowerQuery) || text.includes(lowerQuery)) {{
-            card.style.display = 'block';
-        }} else {{
-            card.style.display = 'none';
-        }}
+        const category = card.dataset.category;
+        const text = card.textContent;
+
+        // Apply category filter
+        let matchesCategory = currentCategory === 'all' || category === currentCategory;
+
+        // Apply search filter
+        let matchesSearch = !currentQuery || SearchModule.matches(text, currentQuery);
+
+        const show = matchesCategory && matchesSearch;
+        card.style.display = show ? 'block' : 'none';
+        if (show) visibleCount++;
     }});
 
-    // Reset filter buttons
-    document.querySelectorAll('.filter-btn').forEach(btn => btn.classList.remove('active'));
-    document.querySelector('.filter-btn').classList.add('active');
+    document.getElementById('visible-count').textContent = visibleCount;
+
+    if (currentQuery) {{
+        resultsDiv.textContent = `${{visibleCount}} match${{visibleCount !== 1 ? 'es' : ''}} found`;
+        resultsDiv.classList.remove('hidden');
+    }} else {{
+        resultsDiv.classList.add('hidden');
+    }}
 }}
 </script>
 '''
@@ -2022,6 +2204,8 @@ def generate_author_page(author: dict, tweet_lookup: dict, author_categories: di
     # Category badge
     cat_badge = f'<span class="category-tag">{cat_name}</span>'
 
+    synonyms_json = json.dumps(SYNONYMS_DICT)
+
     content = f'''
 <div class="author-profile">
     <div class="tweet-header">
@@ -2043,10 +2227,57 @@ def generate_author_page(author: dict, tweet_lookup: dict, author_categories: di
     </div>
 </div>
 
-<h2>{len(tweets)} Bookmarked Tweets</h2>
+<h2><span id="visible-count">{len(tweets)}</span> Bookmarked Tweets</h2>
+<div class="search-container">
+    <input type="text" id="search-input" class="search-box" placeholder="Search @{author['screen_name']}'s tweets..." autocomplete="off">
+    <div class="search-options">
+        <label><input type="checkbox" id="fuzzy-toggle"> Fuzzy matching</label>
+    </div>
+</div>
+<div id="search-results" class="search-results hidden"></div>
 <div class="tweet-list">
 {tweets_html}
 </div>
+<script>
+const SYNONYMS = {synonyms_json};
+{SEARCH_MODULE_JS}
+
+// Setup fuzzy toggle
+document.getElementById('fuzzy-toggle').addEventListener('change', function() {{
+    SearchModule.fuzzyEnabled = this.checked;
+    applyFilters();
+}});
+
+// Setup search input
+const searchInput = document.getElementById('search-input');
+let searchTimeout = null;
+searchInput.addEventListener('input', function() {{
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => applyFilters(), 200);
+}});
+
+function applyFilters() {{
+    const query = searchInput.value.trim();
+    let visibleCount = 0;
+    const resultsDiv = document.getElementById('search-results');
+
+    document.querySelectorAll('.tweet-card').forEach(card => {{
+        const tweetText = card.querySelector('.tweet-text')?.textContent || '';
+        const show = !query || SearchModule.matches(tweetText, query);
+        card.classList.toggle('hidden', !show);
+        if (show) visibleCount++;
+    }});
+
+    document.getElementById('visible-count').textContent = visibleCount;
+
+    if (query) {{
+        resultsDiv.textContent = `${{visibleCount}} match${{visibleCount !== 1 ? 'es' : ''}} found`;
+        resultsDiv.classList.remove('hidden');
+    }} else {{
+        resultsDiv.classList.add('hidden');
+    }}
+}}
+</script>
 '''
 
     page_html = HTML_BASE.format(title=f"@{author['screen_name']} - Authors", content=content)
@@ -2216,9 +2447,19 @@ def generate_story_page(cat_id: str, year: str, story: dict,
 '''
 
     # Assemble page
+    synonyms_json = json.dumps(SYNONYMS_DICT)
+
     content = f'''
 <h1>{cat_name} - {year}</h1>
 <p class="meta">{story.get('tweet_count', 0)} bookmarks | Generated {story.get('generated_at', '')[:10]}</p>
+
+<div class="search-container">
+    <input type="text" id="search-input" class="search-box" placeholder="Search this story..." autocomplete="off">
+    <div class="search-options">
+        <label><input type="checkbox" id="fuzzy-toggle"> Fuzzy matching</label>
+    </div>
+</div>
+<div id="search-results" class="search-results hidden"></div>
 
 <div class="summary-narrative">
 {markdown.markdown(story.get('summary', ''))}
@@ -2229,6 +2470,81 @@ def generate_story_page(cat_id: str, year: str, story: dict,
 
 <h2>All Bookmarks</h2>
 {tweets_html}
+
+<script>
+const SYNONYMS = {synonyms_json};
+{SEARCH_MODULE_JS}
+
+// Setup fuzzy toggle
+document.getElementById('fuzzy-toggle').addEventListener('change', function() {{
+    SearchModule.fuzzyEnabled = this.checked;
+    applyFilters();
+}});
+
+// Setup search input
+const searchInput = document.getElementById('search-input');
+let searchTimeout = null;
+searchInput.addEventListener('input', function() {{
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => applyFilters(), 200);
+}});
+
+function applyFilters() {{
+    const query = searchInput.value.trim();
+    const resultsDiv = document.getElementById('search-results');
+    let matchCount = 0;
+
+    // Search timeline events
+    document.querySelectorAll('.timeline-event').forEach(event => {{
+        const title = event.querySelector('.event-title')?.textContent || '';
+        const summary = event.querySelector('.event-summary')?.textContent || '';
+        const searchableText = `${{title}} ${{summary}}`;
+        const matches = !query || SearchModule.matches(searchableText, query);
+        event.style.display = matches ? 'block' : 'none';
+        if (matches) matchCount++;
+    }});
+
+    // Search bookmark sections
+    document.querySelectorAll('.bookmark-section').forEach(section => {{
+        const title = section.querySelector('.section-title')?.textContent || '';
+        const sectionTweets = section.querySelectorAll('.tweet-card');
+        let sectionMatches = false;
+        let visibleInSection = 0;
+
+        sectionTweets.forEach(card => {{
+            const tweetText = card.querySelector('.tweet-text')?.textContent || '';
+            const authorName = card.querySelector('.author-name')?.textContent || '';
+            const searchableText = `${{tweetText}} ${{authorName}}`;
+            const matches = !query || SearchModule.matches(searchableText, query);
+            card.classList.toggle('hidden', !matches);
+            if (matches) {{
+                sectionMatches = true;
+                visibleInSection++;
+            }}
+        }});
+
+        // Show section if any tweets match or title matches
+        const titleMatches = !query || SearchModule.matches(title, query);
+        section.style.display = (sectionMatches || titleMatches) ? 'block' : 'none';
+
+        // Auto-expand sections with matches
+        if (query && sectionMatches) {{
+            section.classList.remove('collapsed');
+        }}
+    }});
+
+    if (query) {{
+        resultsDiv.textContent = `Found matches in events and bookmarks`;
+        resultsDiv.classList.remove('hidden');
+    }} else {{
+        resultsDiv.classList.add('hidden');
+        // Re-collapse all sections when search is cleared
+        document.querySelectorAll('.bookmark-section').forEach(section => {{
+            section.classList.add('collapsed');
+        }});
+    }}
+}}
+</script>
 '''
 
     page_html = HTML_BASE.format(title=f"{cat_name} - {year}", content=content)
@@ -2314,23 +2630,39 @@ def cmd_generate(args: argparse.Namespace) -> None:
     # Generate main index (chronological) with infinite scroll
     print("Generating main index with infinite scroll...")
 
-    # Create data directory and export tweets JSON
+    # Create data directory and export tweets JSON in chunks for lazy loading
     data_dir = MASTER_HTML_DIR / "data"
     data_dir.mkdir(exist_ok=True)
 
     tweets_json = generate_tweets_json(bookmarks, categories_data, media_mode="local")
-    with open(data_dir / "tweets.json", "w", encoding="utf-8") as f:
-        json.dump(tweets_json, f)
-    print(f"  Exported {len(tweets_json)} tweets to data/tweets.json")
+
+    # Split into chunks of 100 tweets each
+    CHUNK_SIZE = 100
+    chunks = [tweets_json[i:i+CHUNK_SIZE] for i in range(0, len(tweets_json), CHUNK_SIZE)]
+
+    for i, chunk in enumerate(chunks):
+        with open(data_dir / f"tweets-{i}.json", "w", encoding="utf-8") as f:
+            json.dump(chunk, f)
+
+    # Write metadata file
+    metadata = {"total": len(tweets_json), "chunks": len(chunks), "chunk_size": CHUNK_SIZE}
+    with open(data_dir / "tweets-meta.json", "w", encoding="utf-8") as f:
+        json.dump(metadata, f)
+
+    print(f"  Exported {len(tweets_json)} tweets in {len(chunks)} chunks to data/")
 
     # Create compact search index for suggestions
     search_suggestions = json.dumps(search_index.get("suggestions", {}))
+    synonyms_json = json.dumps(SYNONYMS_DICT)
 
     index_content = f"""
 <h1>Twitter Bookmarks</h1>
 <p class="meta"><span id="shown-count">0</span> of {len(bookmarks)} bookmarks</p>
 <div class="search-container">
     <input type="text" id="search-input" class="search-box" placeholder="Search tweets... (type @ for profiles)" autocomplete="off">
+    <div class="search-options">
+        <label><input type="checkbox" id="fuzzy-toggle"> Fuzzy matching</label>
+    </div>
     <div id="search-suggestions" class="search-suggestions hidden"></div>
 </div>
 <div id="search-results" class="search-results hidden"></div>
@@ -2338,6 +2670,9 @@ def cmd_generate(args: argparse.Namespace) -> None:
 <div id="scroll-sentinel"></div>
 <div id="loading-indicator" class="loading-indicator">Loading...</div>
 <script>
+const SYNONYMS = {synonyms_json};
+{SEARCH_MODULE_JS}
+
 const SUGGESTIONS = {search_suggestions};
 const BATCH_SIZE = 50;
 const CATEGORIES_PATH = 'categories/';
@@ -2347,22 +2682,57 @@ let filteredTweets = [];
 let displayedCount = 0;
 let isLoading = false;
 let searchTimeout = null;
+let tweetsMeta = null;
+let loadedChunks = 0;
+let isLoadingChunk = false;
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {{
     try {{
-        const response = await fetch('data/tweets.json');
-        allTweets = await response.json();
+        // Load metadata first
+        const metaResponse = await fetch('data/tweets-meta.json');
+        tweetsMeta = await metaResponse.json();
+
+        // Load first chunk
+        await loadNextChunk();
         filteredTweets = allTweets;
         loadMoreTweets();
         setupInfiniteScroll();
         setupSearch();
+        setupFuzzyToggle();
     }} catch (e) {{
         console.error('Failed to load tweets:', e);
         document.getElementById('loading-indicator').textContent = 'Failed to load tweets';
     }}
+}}
+
+async function loadNextChunk() {{
+    if (isLoadingChunk || loadedChunks >= tweetsMeta.chunks) return false;
+    isLoadingChunk = true;
+    try {{
+        const response = await fetch(`data/tweets-${{loadedChunks}}.json`);
+        const chunk = await response.json();
+        allTweets = allTweets.concat(chunk);
+        loadedChunks++;
+        return true;
+    }} catch (e) {{
+        console.error('Failed to load chunk:', e);
+        return false;
+    }} finally {{
+        isLoadingChunk = false;
+    }}
+}}
+
+function setupFuzzyToggle() {{
+    document.getElementById('fuzzy-toggle').addEventListener('change', function() {{
+        SearchModule.fuzzyEnabled = this.checked;
+        const searchInput = document.getElementById('search-input');
+        if (searchInput.value.trim()) {{
+            filterTweets(searchInput.value);
+        }}
+    }});
 }}
 
 function loadMoreTweets() {{
@@ -2406,9 +2776,19 @@ function updateLoadingIndicator() {{
 
 function setupInfiniteScroll() {{
     const sentinel = document.getElementById('scroll-sentinel');
-    const observer = new IntersectionObserver(entries => {{
-        if (entries[0].isIntersecting && displayedCount < filteredTweets.length) {{
-            loadMoreTweets();
+    const observer = new IntersectionObserver(async entries => {{
+        if (entries[0].isIntersecting) {{
+            // Load more chunks if we're near the end of loaded data
+            if (displayedCount >= allTweets.length - BATCH_SIZE && loadedChunks < tweetsMeta.chunks) {{
+                await loadNextChunk();
+                // If not searching, update filtered to include new tweets
+                if (!document.getElementById('search-input').value.trim()) {{
+                    filteredTweets = allTweets;
+                }}
+            }}
+            if (displayedCount < filteredTweets.length) {{
+                loadMoreTweets();
+            }}
         }}
     }}, {{ rootMargin: '200px' }});
     observer.observe(sentinel);
@@ -2488,22 +2868,24 @@ function setupSearch() {{
 }}
 
 function filterTweets(query) {{
-    query = (query || '').toLowerCase().trim();
+    query = (query || '').trim();
     const resultsDiv = document.getElementById('search-results');
 
     if (!query) {{
         filteredTweets = allTweets;
     }} else {{
         const isProfile = query.startsWith('@');
-        const searchTerm = isProfile ? query.slice(1) : query;
-        filteredTweets = allTweets.filter(t => {{
-            if (isProfile) {{
-                return t.author.toLowerCase().includes(searchTerm);
-            }}
-            return t.text.toLowerCase().includes(searchTerm) ||
-                   t.author.toLowerCase().includes(searchTerm) ||
-                   t.author_name.toLowerCase().includes(searchTerm);
-        }});
+        if (isProfile) {{
+            // Profile search - use includes for @ searches
+            const searchTerm = query.slice(1).toLowerCase();
+            filteredTweets = allTweets.filter(t => t.author.toLowerCase().includes(searchTerm));
+        }} else {{
+            // Use SearchModule for fuzzy/synonym search
+            filteredTweets = allTweets.filter(t => {{
+                const searchableText = `${{t.text}} ${{t.author}} ${{t.author_name}}`;
+                return SearchModule.matches(searchableText, query);
+            }});
+        }}
     }}
 
     // Reset and re-render
@@ -2558,12 +2940,18 @@ function renderTweetCard(tweet) {{
 
 function renderMedia(media, tweetUrl) {{
     if (!media || media.length === 0) return '';
-    const items = media.map(m => {{
+    const items = media.map((m, idx) => {{
         if (m.type === 'video') {{
             if (m.src && !m.src.startsWith('http')) {{
-                const posterAttr = m.poster ? ` poster="${{m.poster}}"` : '';
-                const preload = m.poster ? 'none' : 'metadata';
-                return `<video src="${{m.src}}"${{posterAttr}} controls preload="${{preload}}"></video>`;
+                // Show clickable thumbnail that loads video on click
+                if (m.poster) {{
+                    const uniqueId = `video-${{Date.now()}}-${{idx}}`;
+                    return `<div class="video-thumbnail-wrapper" id="${{uniqueId}}" onclick="loadVideo(this, '${{m.src}}', '${{m.poster}}')">
+                        <img src="${{m.poster}}" alt="Video thumbnail" class="video-thumb" loading="lazy">
+                        <div class="video-play-overlay"><span class="play-icon">▶</span></div>
+                    </div>`;
+                }}
+                return `<video src="${{m.src}}" controls preload="metadata"></video>`;
             }}
             // CDN video - show placeholder
             return `<a href="${{tweetUrl}}" target="_blank" class="video-thumbnail" title="View video on X">
@@ -2573,6 +2961,17 @@ function renderMedia(media, tweetUrl) {{
         return `<img src="${{m.src}}" alt="Tweet media" loading="lazy">`;
     }}).join('');
     return `<div class="tweet-media">${{items}}</div>`;
+}}
+
+function loadVideo(wrapper, src, poster) {{
+    const video = document.createElement('video');
+    video.src = src;
+    video.poster = poster;
+    video.controls = true;
+    video.autoplay = true;
+    video.style.maxWidth = '100%';
+    video.style.borderRadius = '12px';
+    wrapper.replaceWith(video);
 }}
 
 function escapeHtml(text) {{
@@ -2718,46 +3117,112 @@ document.querySelectorAll('.year-link').forEach(link => {{
 <div class="month-filter hidden"></div>
 '''
 
+            # Generate search module with synonyms
+            synonyms_json = json.dumps(SYNONYMS_DICT)
+
             cat_content = f"""
 <h1>{cat_info.get('name', cat_id)}</h1>
 <p class="meta"><span id="visible-count">{len(cat_tweets)}</span> bookmarks</p>
+<div class="search-container">
+    <input type="text" id="search-input" class="search-box" placeholder="Search in this category..." autocomplete="off">
+    <div class="search-options">
+        <label><input type="checkbox" id="fuzzy-toggle"> Fuzzy matching</label>
+    </div>
+</div>
+<div id="search-results" class="search-results hidden"></div>
 {filter_html}
 {summary_html}
 <div id="tweets-container">
 {"".join(render_tweet_card(t, categories_data) for t in cat_tweets)}
 </div>
 <script>
+const SYNONYMS = {synonyms_json};
+{SEARCH_MODULE_JS}
+
 const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const catTimeline = {json.dumps(cat_timeline)};
+
+// Current filter state
+let currentYear = 'all';
+let currentMonth = '';
+let currentQuery = '';
 
 // Parse URL params on load
 const params = new URLSearchParams(window.location.search);
 const filterYear = params.get('year');
 const filterMonth = params.get('month');
 
-function filterTweets(year, month) {{
+// Setup fuzzy toggle
+document.getElementById('fuzzy-toggle').addEventListener('change', function() {{
+    SearchModule.fuzzyEnabled = this.checked;
+    applyFilters();
+}});
+
+// Setup search input
+const searchInput = document.getElementById('search-input');
+let searchTimeout = null;
+searchInput.addEventListener('input', function() {{
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => {{
+        currentQuery = this.value.trim();
+        applyFilters();
+    }}, 200);
+}});
+
+function applyFilters() {{
     let visibleCount = 0;
+    const resultsDiv = document.getElementById('search-results');
+
     document.querySelectorAll('.tweet-card').forEach(card => {{
+        // Get tweet text for search
+        const tweetText = card.querySelector('.tweet-text')?.textContent || '';
+        const authorName = card.querySelector('.author-name')?.textContent || '';
+        const authorHandle = card.querySelector('.author-handle')?.textContent || '';
+        const searchableText = `${{tweetText}} ${{authorName}} ${{authorHandle}}`;
+
+        // Get date for time filter
         const dateSpan = card.querySelector('.tweet-stats span:last-child');
-        if (!dateSpan) return;
-        const dateMatch = dateSpan.textContent.match(/([A-Z][a-z]+) (\\d+), (\\d+)/);
-        if (!dateMatch) return;
-
-        const tweetMonth = MONTH_NAMES.indexOf(dateMatch[1]) + 1;
-        const tweetYear = dateMatch[3];
-        const mm = tweetMonth.toString().padStart(2, '0');
-
-        let show = true;
-        if (year && year !== 'all') {{
-            show = tweetYear === year;
-            if (show && month) {{
-                show = mm === month;
+        let tweetYear = '', tweetMonth = '';
+        if (dateSpan) {{
+            const dateMatch = dateSpan.textContent.match(/([A-Z][a-z]+) (\\d+), (\\d+)/);
+            if (dateMatch) {{
+                tweetMonth = (MONTH_NAMES.indexOf(dateMatch[1]) + 1).toString().padStart(2, '0');
+                tweetYear = dateMatch[3];
             }}
         }}
+
+        // Apply search filter
+        let matchesSearch = !currentQuery || SearchModule.matches(searchableText, currentQuery);
+
+        // Apply time filter
+        let matchesTime = true;
+        if (currentYear && currentYear !== 'all') {{
+            matchesTime = tweetYear === currentYear;
+            if (matchesTime && currentMonth) {{
+                matchesTime = tweetMonth === currentMonth;
+            }}
+        }}
+
+        const show = matchesSearch && matchesTime;
         card.classList.toggle('hidden', !show);
         if (show) visibleCount++;
     }});
+
     document.getElementById('visible-count').textContent = visibleCount;
+
+    // Show search results count
+    if (currentQuery) {{
+        resultsDiv.textContent = `${{visibleCount}} match${{visibleCount !== 1 ? 'es' : ''}} found`;
+        resultsDiv.classList.remove('hidden');
+    }} else {{
+        resultsDiv.classList.add('hidden');
+    }}
+}}
+
+function filterTweets(year, month) {{
+    currentYear = year;
+    currentMonth = month;
+    applyFilters();
 }}
 
 // Setup filter buttons
@@ -3759,13 +4224,65 @@ def generate_html_cdn(output_dir: Path, bookmarks: list[dict], categories_data: 
             reverse=True
         )
         tweets_html = "\n".join(render_tweet_card(b, categories_data, use_cdn=True) for b in cat_tweets)
+        synonyms_json = json.dumps(SYNONYMS_DICT)
         content = f'''
 <h1>{cat_info.get("name", cat_id)}</h1>
-<p class="meta">{len(cat_tweets)} bookmarks</p>
+<p class="meta"><span id="visible-count">{len(cat_tweets)}</span> bookmarks</p>
+<div class="search-container">
+    <input type="text" id="search-input" class="search-box" placeholder="Search in this category..." autocomplete="off">
+    <div class="search-options">
+        <label><input type="checkbox" id="fuzzy-toggle"> Fuzzy matching</label>
+    </div>
+</div>
+<div id="search-results" class="search-results hidden"></div>
 <p>{cat_info.get("description", "")}</p>
 <div class="tweet-list">
 {tweets_html}
 </div>
+<script>
+const SYNONYMS = {synonyms_json};
+{SEARCH_MODULE_JS}
+
+// Setup fuzzy toggle
+document.getElementById('fuzzy-toggle').addEventListener('change', function() {{
+    SearchModule.fuzzyEnabled = this.checked;
+    applyFilters();
+}});
+
+// Setup search input
+const searchInput = document.getElementById('search-input');
+let searchTimeout = null;
+searchInput.addEventListener('input', function() {{
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => applyFilters(), 200);
+}});
+
+function applyFilters() {{
+    const query = searchInput.value.trim();
+    let visibleCount = 0;
+    const resultsDiv = document.getElementById('search-results');
+
+    document.querySelectorAll('.tweet-card').forEach(card => {{
+        const tweetText = card.querySelector('.tweet-text')?.textContent || '';
+        const authorName = card.querySelector('.author-name')?.textContent || '';
+        const authorHandle = card.querySelector('.author-handle')?.textContent || '';
+        const searchableText = `${{tweetText}} ${{authorName}} ${{authorHandle}}`;
+
+        const show = !query || SearchModule.matches(searchableText, query);
+        card.classList.toggle('hidden', !show);
+        if (show) visibleCount++;
+    }});
+
+    document.getElementById('visible-count').textContent = visibleCount;
+
+    if (query) {{
+        resultsDiv.textContent = `${{visibleCount}} match${{visibleCount !== 1 ? 'es' : ''}} found`;
+        resultsDiv.classList.remove('hidden');
+    }} else {{
+        resultsDiv.classList.add('hidden');
+    }}
+}}
+</script>
 '''
         page = HTML_BASE.format(title=cat_info.get("name", cat_id), content=content)
         page = fix_paths_for_publish(page, depth=1)  # One level deep
@@ -3875,19 +4392,35 @@ def generate_html_server(output_dir: Path, bookmarks: list[dict], categories_dat
         reverse=True
     )
     tweets_json = generate_tweets_json(sorted_bookmarks, categories_data, media_mode="server")
-    with open(data_dir / "tweets.json", "w", encoding="utf-8") as f:
-        json.dump(tweets_json, f)
-    print(f"  Exported {len(tweets_json)} tweets to data/tweets.json")
+
+    # Split into chunks of 100 tweets each for lazy loading
+    CHUNK_SIZE = 100
+    chunks = [tweets_json[i:i+CHUNK_SIZE] for i in range(0, len(tweets_json), CHUNK_SIZE)]
+
+    for i, chunk in enumerate(chunks):
+        with open(data_dir / f"tweets-{i}.json", "w", encoding="utf-8") as f:
+            json.dump(chunk, f)
+
+    # Write metadata file
+    metadata = {"total": len(tweets_json), "chunks": len(chunks), "chunk_size": CHUNK_SIZE}
+    with open(data_dir / "tweets-meta.json", "w", encoding="utf-8") as f:
+        json.dump(metadata, f)
+
+    print(f"  Exported {len(tweets_json)} tweets in {len(chunks)} chunks to data/")
 
     # Build search index for suggestions
     search_index = build_search_index(bookmarks)
     search_suggestions = json.dumps(search_index.get("suggestions", {}))
+    synonyms_json = json.dumps(SYNONYMS_DICT)
 
     index_content = f"""
 <h1>Twitter Bookmarks</h1>
 <p class="meta"><span id="shown-count">0</span> of {len(bookmarks)} bookmarks</p>
 <div class="search-container">
     <input type="text" id="search-input" class="search-box" placeholder="Search tweets... (type @ for profiles)" autocomplete="off">
+    <div class="search-options">
+        <label><input type="checkbox" id="fuzzy-toggle"> Fuzzy matching</label>
+    </div>
     <div id="search-suggestions" class="search-suggestions hidden"></div>
 </div>
 <div id="search-results" class="search-results hidden"></div>
@@ -3895,6 +4428,9 @@ def generate_html_server(output_dir: Path, bookmarks: list[dict], categories_dat
 <div id="scroll-sentinel"></div>
 <div id="loading-indicator" class="loading-indicator">Loading...</div>
 <script>
+const SYNONYMS = {synonyms_json};
+{SEARCH_MODULE_JS}
+
 const SUGGESTIONS = {search_suggestions};
 const BATCH_SIZE = 50;
 const CATEGORIES_PATH = '/categories/';
@@ -3904,22 +4440,57 @@ let filteredTweets = [];
 let displayedCount = 0;
 let isLoading = false;
 let searchTimeout = null;
+let tweetsMeta = null;
+let loadedChunks = 0;
+let isLoadingChunk = false;
 
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', init);
 
 async function init() {{
     try {{
-        const response = await fetch('/data/tweets.json');
-        allTweets = await response.json();
+        // Load metadata first
+        const metaResponse = await fetch('/data/tweets-meta.json');
+        tweetsMeta = await metaResponse.json();
+
+        // Load first chunk
+        await loadNextChunk();
         filteredTweets = allTweets;
         loadMoreTweets();
         setupInfiniteScroll();
         setupSearch();
+        setupFuzzyToggle();
     }} catch (e) {{
         console.error('Failed to load tweets:', e);
         document.getElementById('loading-indicator').textContent = 'Failed to load tweets';
     }}
+}}
+
+async function loadNextChunk() {{
+    if (isLoadingChunk || loadedChunks >= tweetsMeta.chunks) return false;
+    isLoadingChunk = true;
+    try {{
+        const response = await fetch(`/data/tweets-${{loadedChunks}}.json`);
+        const chunk = await response.json();
+        allTweets = allTweets.concat(chunk);
+        loadedChunks++;
+        return true;
+    }} catch (e) {{
+        console.error('Failed to load chunk:', e);
+        return false;
+    }} finally {{
+        isLoadingChunk = false;
+    }}
+}}
+
+function setupFuzzyToggle() {{
+    document.getElementById('fuzzy-toggle').addEventListener('change', function() {{
+        SearchModule.fuzzyEnabled = this.checked;
+        const searchInput = document.getElementById('search-input');
+        if (searchInput.value.trim()) {{
+            filterTweets(searchInput.value);
+        }}
+    }});
 }}
 
 function loadMoreTweets() {{
@@ -3963,9 +4534,19 @@ function updateLoadingIndicator() {{
 
 function setupInfiniteScroll() {{
     const sentinel = document.getElementById('scroll-sentinel');
-    const observer = new IntersectionObserver(entries => {{
-        if (entries[0].isIntersecting && displayedCount < filteredTweets.length) {{
-            loadMoreTweets();
+    const observer = new IntersectionObserver(async entries => {{
+        if (entries[0].isIntersecting) {{
+            // Load more chunks if we're near the end of loaded data
+            if (displayedCount >= allTweets.length - BATCH_SIZE && loadedChunks < tweetsMeta.chunks) {{
+                await loadNextChunk();
+                // If not searching, update filtered to include new tweets
+                if (!document.getElementById('search-input').value.trim()) {{
+                    filteredTweets = allTweets;
+                }}
+            }}
+            if (displayedCount < filteredTweets.length) {{
+                loadMoreTweets();
+            }}
         }}
     }}, {{ rootMargin: '200px' }});
     observer.observe(sentinel);
@@ -4045,22 +4626,24 @@ function setupSearch() {{
 }}
 
 function filterTweets(query) {{
-    query = (query || '').toLowerCase().trim();
+    query = (query || '').trim();
     const resultsDiv = document.getElementById('search-results');
 
     if (!query) {{
         filteredTweets = allTweets;
     }} else {{
         const isProfile = query.startsWith('@');
-        const searchTerm = isProfile ? query.slice(1) : query;
-        filteredTweets = allTweets.filter(t => {{
-            if (isProfile) {{
-                return t.author.toLowerCase().includes(searchTerm);
-            }}
-            return t.text.toLowerCase().includes(searchTerm) ||
-                   t.author.toLowerCase().includes(searchTerm) ||
-                   t.author_name.toLowerCase().includes(searchTerm);
-        }});
+        if (isProfile) {{
+            // Profile search - use includes for @ searches
+            const searchTerm = query.slice(1).toLowerCase();
+            filteredTweets = allTweets.filter(t => t.author.toLowerCase().includes(searchTerm));
+        }} else {{
+            // Use SearchModule for fuzzy/synonym search
+            filteredTweets = allTweets.filter(t => {{
+                const searchableText = `${{t.text}} ${{t.author}} ${{t.author_name}}`;
+                return SearchModule.matches(searchableText, query);
+            }});
+        }}
     }}
 
     // Reset and re-render
@@ -4115,15 +4698,32 @@ function renderTweetCard(tweet) {{
 
 function renderMedia(media, tweetUrl) {{
     if (!media || media.length === 0) return '';
-    const items = media.map(m => {{
+    const items = media.map((m, idx) => {{
         if (m.type === 'video') {{
-            const posterAttr = m.poster ? ` poster="${{m.poster}}"` : '';
-            const preload = m.poster ? 'none' : 'metadata';
-            return `<video src="${{m.src}}"${{posterAttr}} controls preload="${{preload}}"></video>`;
+            // Show clickable thumbnail that loads video on click
+            if (m.poster) {{
+                const uniqueId = `video-${{Date.now()}}-${{idx}}`;
+                return `<div class="video-thumbnail-wrapper" id="${{uniqueId}}" onclick="loadVideo(this, '${{m.src}}', '${{m.poster}}')">
+                    <img src="${{m.poster}}" alt="Video thumbnail" class="video-thumb" loading="lazy">
+                    <div class="video-play-overlay"><span class="play-icon">▶</span></div>
+                </div>`;
+            }}
+            return `<video src="${{m.src}}" controls preload="metadata"></video>`;
         }}
         return `<img src="${{m.src}}" alt="Tweet media" loading="lazy">`;
     }}).join('');
     return `<div class="tweet-media">${{items}}</div>`;
+}}
+
+function loadVideo(wrapper, src, poster) {{
+    const video = document.createElement('video');
+    video.src = src;
+    video.poster = poster;
+    video.controls = true;
+    video.autoplay = true;
+    video.style.maxWidth = '100%';
+    video.style.borderRadius = '12px';
+    wrapper.replaceWith(video);
 }}
 
 function escapeHtml(text) {{
@@ -4242,13 +4842,65 @@ document.querySelectorAll('.year-link').forEach(link => {{
             reverse=True
         )
         tweets_html = "\n".join(render_tweet_card(b, categories_data, use_server=True) for b in cat_tweets)
+        synonyms_json = json.dumps(SYNONYMS_DICT)
         content = f'''
 <h1>{cat_info.get("name", cat_id)}</h1>
-<p class="meta">{len(cat_tweets)} bookmarks</p>
+<p class="meta"><span id="visible-count">{len(cat_tweets)}</span> bookmarks</p>
+<div class="search-container">
+    <input type="text" id="search-input" class="search-box" placeholder="Search in this category..." autocomplete="off">
+    <div class="search-options">
+        <label><input type="checkbox" id="fuzzy-toggle"> Fuzzy matching</label>
+    </div>
+</div>
+<div id="search-results" class="search-results hidden"></div>
 <p>{cat_info.get("description", "")}</p>
 <div class="tweet-list">
 {tweets_html}
 </div>
+<script>
+const SYNONYMS = {synonyms_json};
+{SEARCH_MODULE_JS}
+
+// Setup fuzzy toggle
+document.getElementById('fuzzy-toggle').addEventListener('change', function() {{
+    SearchModule.fuzzyEnabled = this.checked;
+    applyFilters();
+}});
+
+// Setup search input
+const searchInput = document.getElementById('search-input');
+let searchTimeout = null;
+searchInput.addEventListener('input', function() {{
+    clearTimeout(searchTimeout);
+    searchTimeout = setTimeout(() => applyFilters(), 200);
+}});
+
+function applyFilters() {{
+    const query = searchInput.value.trim();
+    let visibleCount = 0;
+    const resultsDiv = document.getElementById('search-results');
+
+    document.querySelectorAll('.tweet-card').forEach(card => {{
+        const tweetText = card.querySelector('.tweet-text')?.textContent || '';
+        const authorName = card.querySelector('.author-name')?.textContent || '';
+        const authorHandle = card.querySelector('.author-handle')?.textContent || '';
+        const searchableText = `${{tweetText}} ${{authorName}} ${{authorHandle}}`;
+
+        const show = !query || SearchModule.matches(searchableText, query);
+        card.classList.toggle('hidden', !show);
+        if (show) visibleCount++;
+    }});
+
+    document.getElementById('visible-count').textContent = visibleCount;
+
+    if (query) {{
+        resultsDiv.textContent = `${{visibleCount}} match${{visibleCount !== 1 ? 'es' : ''}} found`;
+        resultsDiv.classList.remove('hidden');
+    }} else {{
+        resultsDiv.classList.add('hidden');
+    }}
+}}
+</script>
 '''
         page = HTML_BASE.format(title=cat_info.get("name", cat_id), content=content)
         page = fix_paths_for_server(page)
