@@ -84,33 +84,7 @@ resource "aws_security_group" "web_sg" {
   }
 }
 
-# EC2 instance (default: t3.small with 2GB RAM for Docker builds)
-resource "aws_instance" "web" {
-  ami                    = data.aws_ami.amazon_linux.id
-  instance_type          = var.instance_type
-  key_name               = var.key_pair_name
-  vpc_security_group_ids = [aws_security_group.web_sg.id]
-  
-  # Free-tier eligible: 30GB gp3 storage (minimum required by AMI snapshot)
-  root_block_device {
-    volume_type = "gp3"
-    volume_size = 30
-    encrypted   = true
-  }
-
-  # User data script to install Docker and run the app
-  user_data = templatefile("${path.module}/user_data.sh", {
-    project_name = var.project_name
-  })
-
-  user_data_replace_on_change = true
-
-  tags = {
-    Name        = "${var.project_name}-web"
-    Project     = var.project_name
-    Environment = var.environment
-  }
-}
+# EC2 instance removed - using version with IAM profile below
 
 # Elastic IP (optional, but useful for persistent IP)
 resource "aws_eip" "web_eip" {
@@ -176,18 +150,18 @@ resource "aws_iam_instance_profile" "ec2_profile" {
   }
 }
 
-# Update EC2 instance to use IAM profile
+# EC2 instance with IAM profile
 resource "aws_instance" "web" {
   ami                    = data.aws_ami.amazon_linux.id
   instance_type          = var.instance_type
   key_name               = var.key_pair_name
   vpc_security_group_ids = [aws_security_group.web_sg.id]
   iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
-  
-  # Free-tier eligible: 30GB gp3 storage (minimum required by AMI snapshot)
+
+  # 60GB gp3 storage (doubled from 30GB for media files)
   root_block_device {
     volume_type = "gp3"
-    volume_size = 30
+    volume_size = 60
     encrypted   = true
   }
 
