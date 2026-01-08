@@ -29,6 +29,12 @@ python3 tools/bookmark_merger.py stories --list-categories # Show available cate
 python3 tools/bookmark_merger.py stories --category ai-machine-learning  # Specific category
 python3 tools/bookmark_merger.py stories --force-year 2025 # Force regenerate year
 
+# AI Authors (categorizes authors by profile type)
+python3 tools/bookmark_merger.py authors                  # Categorize + generate HTML
+python3 tools/bookmark_merger.py authors categorize       # AI categorization only
+python3 tools/bookmark_merger.py authors generate         # Generate HTML only
+python3 tools/bookmark_merger.py authors --min-bookmarks 5 # Only categorize authors with 5+ bookmarks
+
 # Publishing to GitHub Pages (uses Twitter CDN for media, no local files needed)
 python3 tools/bookmark_merger.py publish    # Publish to dethele.com/twitter
 python3 tools/bookmark_merger.py unpublish  # Remove from dethele.com (DESTRUCTIVE)
