@@ -30,7 +30,7 @@
                     <th>Invited By</th>
                     <th>Created</th>
                     <th>Expires</th>
-                    {% if is_admin %}<th>Actions</th>{% endif %}
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -46,14 +46,21 @@
                             {{ invitation.expires_at|date:"M d, Y" }}
                         {% endif %}
                     </td>
-                    {% if is_admin %}
                     <td>
+                        {% if not invitation.is_expired %}
+                        <button type="button" class="btn btn-secondary btn-small" onclick="toggleLink('link-{{ invitation.id }}')">Show Link</button>
+                        <div id="link-{{ invitation.id }}" class="invite-link-container" style="display:none;">
+                            <input type="text" readonly class="invite-link-input" value="{{ request.scheme }}://{{ request.get_host }}/accounts/invite/{{ invitation.token }}/" onclick="this.select()">
+                            <button type="button" class="btn btn-copy btn-small" onclick="copyLink('link-{{ invitation.id }}')">Copy</button>
+                        </div>
+                        {% endif %}
+                        {% if is_admin %}
                         <form method="post" action="{% url 'delete_invitation' invitation.id %}" style="display:inline;">
                             {% csrf_token %}
                             <button type="submit" class="btn btn-danger btn-small" onclick="return confirm('Delete invitation for {{ invitation.email }}?')">Delete</button>
                         </form>
+                        {% endif %}
                     </td>
-                    {% endif %}
                 </tr>
                 {% endfor %}
             </tbody>
@@ -236,5 +243,68 @@
 .text-muted {
     color: #aab8c2;
 }
+
+.btn-secondary {
+    background: #657786;
+}
+
+.btn-secondary:hover {
+    background: #545e69;
+}
+
+.btn-copy {
+    background: #17bf63;
+}
+
+.btn-copy:hover {
+    background: #14a857;
+}
+
+.invite-link-container {
+    margin-top: 8px;
+    display: flex;
+    gap: 5px;
+    align-items: center;
+}
+
+.invite-link-input {
+    flex: 1;
+    padding: 6px 10px;
+    border: 1px solid #e1e8ed;
+    border-radius: 4px;
+    font-size: 12px;
+    background: #f7f9fa;
+    min-width: 300px;
+}
+
+.invite-link-input:focus {
+    outline: none;
+    border-color: #1da1f2;
+}
 </style>
+
+<script>
+function toggleLink(id) {
+    const container = document.getElementById(id);
+    if (container.style.display === 'none') {
+        container.style.display = 'flex';
+    } else {
+        container.style.display = 'none';
+    }
+}
+
+function copyLink(id) {
+    const container = document.getElementById(id);
+    const input = container.querySelector('input');
+    input.select();
+    document.execCommand('copy');
+
+    const btn = container.querySelector('.btn-copy');
+    const originalText = btn.textContent;
+    btn.textContent = 'Copied!';
+    setTimeout(() => {
+        btn.textContent = originalText;
+    }, 2000);
+}
+</script>
 {% endblock %}
