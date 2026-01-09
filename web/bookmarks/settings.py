@@ -88,7 +88,7 @@ MIDDLEWARE = [
     'allauth.account.middleware.AccountMiddleware',
 ]
 
-ROOT_URLCONF = 'web.bookmarks.urls'
+ROOT_URLCONF = 'bookmarks.urls'
 
 TEMPLATES = [
     {
@@ -106,7 +106,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'web.bookmarks.wsgi.application'
+WSGI_APPLICATION = 'bookmarks.wsgi.application'
 
 
 # Database

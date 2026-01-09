@@ -53,9 +53,9 @@ services:
           memory: 600M
         reservations:
           memory: 400M
-    # Health check (using Python since curl may not be available)
+    # Health check - check if Django is responding (any 2xx/3xx is healthy)
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/').read()"]
+      test: ["CMD", "python", "-c", "import http.client; c = http.client.HTTPConnection('localhost', 8000, timeout=5); c.request('GET', '/accounts/auth-check/', headers={'X-Forwarded-Proto': 'https', 'Host': 'twitter.dethele.com'}); r = c.getresponse(); exit(0 if r.status < 400 else 1)"]
       interval: 30s
       timeout: 10s
       retries: 3
