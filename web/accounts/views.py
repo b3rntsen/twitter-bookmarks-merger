@@ -12,14 +12,23 @@ from django.utils import timezone
 from .models import UserProfile, Invitation
 
 
-@login_required
+def health_check(request):
+    """Simple health check endpoint for Docker healthcheck.
+
+    Always returns 200 to indicate the server is running.
+    """
+    return HttpResponse("OK", status=200)
+
+
 def auth_check(request):
     """Auth check endpoint for nginx auth_request.
 
     Returns 200 if authenticated, 401 if not.
     Used by nginx to protect static HTML files.
     """
-    return HttpResponse(status=200)
+    if request.user.is_authenticated:
+        return HttpResponse(status=200)
+    return HttpResponse(status=401)
 
 
 @login_required
