@@ -10,11 +10,11 @@
 <body>
     <nav class="navbar">
         <div class="container">
-            <a href="{% url 'bookmark_list' %}" class="logo">Twitter Bookmarks</a>
+            <a href="/" class="logo">Twitter Bookmarks</a>
             {% block breadcrumbs %}
             <nav class="breadcrumbs" aria-label="Breadcrumb">
                 <ol>
-                    <li><a href="{% url 'bookmark_list' %}">Home</a></li>
+                    <li><a href="/">Home</a></li>
                     {% block breadcrumb_items %}{% endblock %}
                 </ol>
             </nav>
