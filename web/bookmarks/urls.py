@@ -14,14 +14,14 @@ from django.conf.urls.static import static
 urlpatterns = [
     # OAuth must stay at root for Google callback URLs
     path('accounts/', include('allauth.urls')),
-    path('accounts/', include('web.accounts.urls')),
+    path('accounts/', include('accounts.urls')),
 
     # Django app moved to /new-gen/
     path('new-gen/admin/', admin.site.urls),
-    path('new-gen/', include('web.bookmarks_app.urls')),
-    path('new-gen/twitter/', include('web.twitter.urls')),
-    path('new-gen/lists/', include('web.lists_app.urls')),
-    path('new-gen/processing/', include('web.processing_app.urls')),
+    path('new-gen/', include('bookmarks_app.urls')),
+    path('new-gen/twitter/', include('twitter.urls')),
+    path('new-gen/lists/', include('lists_app.urls')),
+    path('new-gen/processing/', include('processing_app.urls')),
 ]
 
 if settings.DEBUG:

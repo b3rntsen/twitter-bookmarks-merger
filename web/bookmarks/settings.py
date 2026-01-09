@@ -69,12 +69,12 @@ INSTALLED_APPS = [
     'rest_framework',
     'django_q',  # Background job processing
     
-    # Local apps (in web/ subdirectory)
-    'web.accounts',
-    'web.twitter',
-    'web.bookmarks_app',
-    'web.lists_app',
-    'web.processing_app.apps.ProcessingAppConfig',  # Content processing and job management
+    # Local apps
+    'accounts',
+    'twitter',
+    'bookmarks_app',
+    'lists_app',
+    'processing_app.apps.ProcessingAppConfig',  # Content processing and job management
 ]
 
 MIDDLEWARE = [

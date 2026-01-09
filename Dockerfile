@@ -84,7 +84,7 @@ RUN mkdir -p media staticfiles
 EXPOSE 8000
 
 # Set PYTHONPATH to include web directory
-ENV PYTHONPATH="/app:${PYTHONPATH}"
+ENV PYTHONPATH="/app/web:/app:${PYTHONPATH}"
 
 # Create entrypoint script
 RUN echo '#!/bin/bash\n\
