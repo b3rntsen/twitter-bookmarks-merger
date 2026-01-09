@@ -4352,6 +4352,34 @@ def add_newgen_link(html: str) -> str:
     return html
 
 
+def add_admin_link(html: str) -> str:
+    """Add 'Admin' link to navbar for admins only (with JS to show conditionally)"""
+    # Add hidden admin link after New-Gen link
+    admin_link = '<a href="/accounts/admin/" id="admin-link" style="display:none;">Admin</a>'
+    admin_js = '''
+<script>
+// Check if user is admin and show admin link
+fetch('/accounts/user-info/')
+    .then(r => r.json())
+    .then(data => {
+        if (data.is_admin) {
+            const link = document.getElementById('admin-link');
+            if (link) link.style.display = '';
+        }
+    })
+    .catch(() => {});
+</script>
+'''
+    # Add admin link after New-Gen link
+    html = html.replace(
+        '<a href="/new-gen/">New-Gen</a>',
+        f'<a href="/new-gen/">New-Gen</a>\n        {admin_link}'
+    )
+    # Add the JavaScript before closing body tag
+    html = html.replace('</body>', f'{admin_js}</body>')
+    return html
+
+
 def fix_paths_for_server(html: str) -> str:
     """Fix relative paths to absolute paths for server root serving"""
     # Convert relative nav links to absolute
@@ -4736,6 +4764,7 @@ function escapeHtml(text) {{
     page = HTML_BASE.format(title="Twitter Bookmarks", content=index_content)
     page = fix_paths_for_server(page)
     page = add_newgen_link(page)
+    page = add_admin_link(page)
     page = page.replace('href="/index.html"', 'href="/"')
     with open(html_dir / "index.html", "w", encoding="utf-8") as f:
         f.write(page)
@@ -4831,6 +4860,7 @@ document.querySelectorAll('.year-link').forEach(link => {{
     page = HTML_BASE.format(title="Categories", content=cat_index_content)
     page = fix_paths_for_server(page)
     page = add_newgen_link(page)
+    page = add_admin_link(page)
     with open(html_dir / "categories" / "index.html", "w", encoding="utf-8") as f:
         f.write(page)
 
@@ -4905,6 +4935,7 @@ function applyFilters() {{
         page = HTML_BASE.format(title=cat_info.get("name", cat_id), content=content)
         page = fix_paths_for_server(page)
         page = add_newgen_link(page)
+        page = add_admin_link(page)
         with open(html_dir / "categories" / f"{cat_id}.html", "w", encoding="utf-8") as f:
             f.write(page)
 
@@ -4926,6 +4957,7 @@ function applyFilters() {{
 
                 content = fix_paths_for_server(content)
                 content = add_newgen_link(content)
+                content = add_admin_link(content)
                 # Fix media paths to absolute server paths
                 content = content.replace('../../../media/', '/media/bookmarks/')
 
@@ -4949,6 +4981,7 @@ function applyFilters() {{
 
             content = fix_paths_for_server(content)
             content = add_newgen_link(content)
+            content = add_admin_link(content)
             # Fix media paths
             content = content.replace('../../media/', '/media/bookmarks/')
             content = content.replace('../../../media/', '/media/bookmarks/')
@@ -4974,6 +5007,7 @@ function applyFilters() {{
 
             content = fix_paths_for_server(content)
             content = add_newgen_link(content)
+            content = add_admin_link(content)
             # Fix media paths
             content = content.replace('../../media/', '/media/bookmarks/')
 

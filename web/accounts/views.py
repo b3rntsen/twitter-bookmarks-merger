@@ -6,7 +6,7 @@ from django.contrib.auth import login
 from django.contrib import messages
 from django.core.exceptions import ValidationError
 from django.core.validators import validate_email
-from django.http import HttpResponse, HttpResponseForbidden
+from django.http import HttpResponse, HttpResponseForbidden, JsonResponse
 from django.utils import timezone
 
 from .models import UserProfile, Invitation
@@ -31,16 +31,36 @@ def auth_check(request):
     return HttpResponse(status=401)
 
 
+def user_info(request):
+    """Return current user info as JSON.
+
+    Used by static HTML to conditionally show admin links.
+    """
+    if not request.user.is_authenticated:
+        return JsonResponse({'authenticated': False})
+
+    profile, _ = UserProfile.objects.get_or_create(user=request.user)
+    return JsonResponse({
+        'authenticated': True,
+        'email': request.user.email,
+        'is_admin': profile.is_admin,
+    })
+
+
 @login_required
 def admin_panel(request):
-    """User management admin panel. All authenticated users can view."""
-    users = User.objects.select_related('profile').order_by('-date_joined')
+    """User management admin panel. Admin only."""
     user_profile, _ = UserProfile.objects.get_or_create(user=request.user)
+
+    if not user_profile.is_admin:
+        return HttpResponseForbidden("Admin access required")
+
+    users = User.objects.select_related('profile').order_by('-date_joined')
     pending_invitations = Invitation.objects.filter(used=False).order_by('-created_at')
 
     return render(request, 'accounts/admin_panel.html', {
         'users': users,
-        'is_admin': user_profile.is_admin,
+        'is_admin': True,
         'pending_invitations': pending_invitations,
     })
 
