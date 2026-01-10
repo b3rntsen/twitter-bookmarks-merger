@@ -5057,6 +5057,59 @@ def cmd_publish_server(args: argparse.Namespace) -> None:
     print(f"  rsync -avz --progress {MASTER_MEDIA_DIR}/ user@server:/app/bookmarks-media/")
 
 
+def cmd_sync(args: argparse.Namespace) -> None:
+    """Full sync: merge, consolidate, categorize new, generate HTML, and deploy to server"""
+    import subprocess
+
+    print("=" * 60)
+    print("=== FULL SYNC: New content → Server ===")
+    print("=" * 60)
+
+    # Step 1: Merge
+    print("\n[1/5] Merging JSON files...")
+    cmd_merge(args)
+
+    # Step 2: Consolidate media
+    print("\n[2/5] Consolidating media files...")
+    cmd_consolidate(args)
+
+    # Step 3: Update (categorizes new bookmarks and regenerates HTML)
+    print("\n[3/5] Categorizing new bookmarks and generating HTML...")
+    cmd_update(args)
+
+    # Step 4: Generate server HTML
+    print("\n[4/5] Generating server HTML...")
+    cmd_publish_server(args)
+
+    # Step 5: Deploy to server
+    print("\n[5/5] Deploying to server...")
+    deploy_script = BASE_DIR / "scripts" / "deploy-bookmarks.sh"
+    if deploy_script.exists():
+        # Deploy HTML first (fast)
+        result = subprocess.run(
+            [str(deploy_script), "--html-only"],
+            cwd=BASE_DIR,
+            capture_output=False
+        )
+        if result.returncode == 0:
+            # Ask about media sync
+            if args.with_media:
+                print("\nSyncing media files (this may take a while)...")
+                subprocess.run([str(deploy_script)], cwd=BASE_DIR)
+            else:
+                print("\n💡 Tip: Run with --with-media to also sync media files")
+        else:
+            print("⚠ HTML deployment failed")
+    else:
+        print(f"⚠ Deploy script not found: {deploy_script}")
+        print("Manual deployment required:")
+        print(f"  rsync -avz --delete {SERVER_HTML_DIR}/ user@server:/app/bookmarks-html/")
+
+    print("\n" + "=" * 60)
+    print("✓ Sync complete! View at: https://twitter.dethele.com/")
+    print("=" * 60)
+
+
 def cmd_thumbnails(args: argparse.Namespace) -> None:
     """Generate video thumbnails for all videos in master/media"""
     print("=== Generating Video Thumbnails ===")
@@ -5233,6 +5286,10 @@ def main():
     subparsers.add_parser("publish-server", help="Generate HTML for server deployment (twitter.dethele.com)")
     subparsers.add_parser("thumbnails", help="Generate video thumbnails (requires ffmpeg)")
 
+    # Sync command - full workflow
+    sync_parser = subparsers.add_parser("sync", help="Full sync: merge, categorize, generate, deploy to server")
+    sync_parser.add_argument("--with-media", action="store_true", help="Also sync media files (slower)")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -5255,6 +5312,7 @@ def main():
         "unpublish": cmd_unpublish,
         "publish-server": cmd_publish_server,
         "thumbnails": cmd_thumbnails,
+        "sync": cmd_sync,
     }
 
     commands[args.command](args)

@@ -20,6 +20,10 @@ python3 tools/bookmark_merger.py generate     # Generate HTML → master/html/
 python3 tools/bookmark_merger.py export       # Export for NotebookLM → master/exports/
 python3 tools/bookmark_merger.py all          # Run merge, consolidate, generate, export
 
+# Full sync - ONE COMMAND to process new exports and deploy (RECOMMENDED)
+python3 tools/bookmark_merger.py sync              # Merge, categorize, generate, deploy HTML
+python3 tools/bookmark_merger.py sync --with-media # Also sync media files (slower)
+
 # Incremental update (preferred for adding new exports)
 python3 tools/bookmark_merger.py update       # Merge new, categorize NEW only, regenerate
 
