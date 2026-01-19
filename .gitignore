@@ -5,7 +5,10 @@ __pycache__/
 *.pyc
 
 # Data directories (large media files)
-raw/
+raw/json/*
+!raw/json/.gitignore
+raw/media/*
+!raw/media/.gitignore
 master/
 server/
 
@@ -13,7 +16,7 @@ server/
 *.sqlite3
 db.sqlite3
 staticfiles/
-media/
+/media/
 
 # Docker deployment directories (created on server, not committed)
 bookmarks-html/

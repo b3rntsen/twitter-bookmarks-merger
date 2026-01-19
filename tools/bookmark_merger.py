@@ -30,7 +30,7 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 # Base paths
 BASE_DIR = Path(__file__).parent.parent
@@ -55,6 +55,7 @@ MASTER_AUTHORS = MASTER_DIR / "authors.json"
 MASTER_MEDIA_DIR = MASTER_DIR / "media"
 MASTER_HTML_DIR = MASTER_DIR / "html"
 MASTER_EXPORTS_DIR = MASTER_DIR / "exports"
+MASTER_QUOTED_TWEETS = MASTER_DIR / "quoted_tweets.json"
 
 # Synonym dictionary for search expansion
 SYNONYMS_DICT = {
@@ -195,8 +196,39 @@ def deduplicate_bookmarks(bookmarks: list[dict]) -> list[dict]:
     return list(by_id.values())
 
 
+def backup_master_json() -> Optional[Path]:
+    """Create timestamped backup of master/bookmarks.json before overwriting.
+
+    Returns the backup path if created, None if no file to backup.
+    Keeps only the last 5 backups to avoid disk bloat.
+    """
+    if not MASTER_JSON.exists():
+        return None
+
+    backup_dir = MASTER_DIR / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_dir / f"bookmarks_{timestamp}.json"
+    shutil.copy2(MASTER_JSON, backup_path)
+    print(f"  Backed up to {backup_path}")
+
+    # Keep only last 5 backups
+    backups = sorted(backup_dir.glob("bookmarks_*.json"))
+    for old_backup in backups[:-5]:
+        old_backup.unlink()
+        print(f"  Removed old backup: {old_backup.name}")
+
+    return backup_path
+
+
 def cmd_merge(args: argparse.Namespace) -> None:
-    """Merge and deduplicate JSON files"""
+    """Merge and deduplicate JSON files from raw/json/.
+
+    WARNING: This command reads ONLY from raw/json/ and overwrites master/bookmarks.json.
+    If raw/json/ is missing old export files, those bookmarks will be lost.
+    Use 'update' command instead for safe incremental additions.
+    """
     print("=== Merging JSON files ===")
 
     all_bookmarks = load_all_json_files()
@@ -209,12 +241,32 @@ def cmd_merge(args: argparse.Namespace) -> None:
     print(f"After deduplication: {len(deduped)}")
     print(f"Duplicates removed: {len(all_bookmarks) - len(deduped)}")
 
+    # Data loss detection: warn if merge would reduce bookmark count
+    if MASTER_JSON.exists():
+        with open(MASTER_JSON, "r", encoding="utf-8") as f:
+            existing = json.load(f)
+        existing_count = len(existing)
+        if len(deduped) < existing_count:
+            print(f"\n⚠️  WARNING: Merge would REDUCE bookmarks from {existing_count} to {len(deduped)}")
+            print("This typically means raw/json/ is missing old export files.")
+            print("\nOptions:")
+            print("  1. Use 'update' command instead (preserves existing + adds new)")
+            print("  2. Restore missing JSON exports to raw/json/")
+            print("  3. Run with --force to proceed anyway")
+            if not getattr(args, 'force', False):
+                print("\nAborting. Use --force to override this safety check.")
+                return
+            print("\n--force specified, proceeding anyway...")
+
     # Sort by created date (newest first) - parse actual date, not string sort
     from datetime import timezone
     deduped.sort(key=lambda x: parse_tweet_date(x.get("Created At", "")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
 
     # Ensure master directory exists
     MASTER_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Backup before overwriting
+    backup_master_json()
 
     # Write merged JSON
     with open(MASTER_JSON, "w", encoding="utf-8") as f:
@@ -1121,6 +1173,21 @@ HTML_BASE = """<!DOCTYPE html>
             border-radius: 12px;
             background: #1a1a2e;
         }}
+        .quoted-tweet {{
+            margin: 12px 0;
+            padding: 12px;
+            border: 1px solid #38444d;
+            border-radius: 12px;
+            background: rgba(255, 255, 255, 0.03);
+        }}
+        .quoted-tweet blockquote {{
+            margin: 0;
+            padding: 0;
+            border: none;
+        }}
+        .quoted-tweet .twitter-tweet {{
+            margin: 0 !important;
+        }}
         .video-thumbnail {{
             display: inline-block;
             text-decoration: none;
@@ -1557,6 +1624,7 @@ TWEET_TEMPLATE = """
     </div>
     <div class="tweet-text">{text}</div>
     {media_html}
+    {quoted_tweet_html}
     {categories_html}
     <div class="tweet-stats">
         <span>{likes} likes</span>
@@ -1772,15 +1840,56 @@ def generate_tweets_json(bookmarks: list[dict], categories_data: dict | None,
     return tweets_data
 
 
+def render_quoted_tweet_html(bookmark: dict, quoted_tweets_cache: dict | None) -> str:
+    """Render HTML for quoted tweets embedded in this bookmark.
+
+    Args:
+        bookmark: The bookmark containing the quote
+        quoted_tweets_cache: Cache from master/quoted_tweets.json
+
+    Returns:
+        HTML string with the quoted tweet(s), or empty string if none
+    """
+    if not quoted_tweets_cache:
+        return ""
+
+    # Get quoted tweet URLs from this bookmark
+    quoted_urls = extract_quoted_tweet_urls(bookmark)
+    if not quoted_urls:
+        return ""
+
+    fetched = quoted_tweets_cache.get("fetched", {})
+    html_parts = []
+
+    for url in quoted_urls:
+        tweet_id = extract_tweet_id_from_url(url)
+        if tweet_id and tweet_id in fetched:
+            quoted = fetched[tweet_id]
+            # Use the oEmbed HTML directly, wrapped in our container
+            oembed_html = quoted.get("html", "")
+            if oembed_html:
+                html_parts.append(f'<div class="quoted-tweet">{oembed_html}</div>')
+
+    return "\n".join(html_parts)
+
+
 def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
                       include_detail_link: bool = True, use_cdn: bool = False,
-                      use_server: bool = False) -> str:
+                      use_server: bool = False, quoted_tweets: dict | None = None) -> str:
     """Render a tweet card HTML.
 
     Media rendering modes:
     - use_cdn=True: Twitter CDN URLs (for GitHub Pages)
     - use_server=True: Absolute /media/bookmarks/ paths (for EC2 server)
     - Both False: Relative ../media/ paths (for local viewing)
+
+    Args:
+        bookmark: The bookmark data
+        categories_data: Categories metadata
+        include_detail_link: Whether to include link to detail page
+        use_cdn: Use Twitter CDN for media
+        use_server: Use server paths for media
+        quoted_tweets: Cache of quoted tweets from master/quoted_tweets.json
     """
     tweet_id = bookmark.get("Tweet Id", "")
 
@@ -1813,6 +1922,9 @@ def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
     else:
         media_html = render_media_html(tweet_id, MASTER_MEDIA_DIR)
 
+    # Render quoted tweets
+    quoted_tweet_html = render_quoted_tweet_html(bookmark, quoted_tweets)
+
     return TWEET_TEMPLATE.format(
         tweet_id=tweet_id,
         avatar_url=bookmark.get("User Avatar Url", ""),
@@ -1820,6 +1932,7 @@ def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
         screen_name=bookmark.get("User Screen Name", "unknown"),
         text=bookmark.get("Full Text", ""),
         media_html=media_html,
+        quoted_tweet_html=quoted_tweet_html,
         categories_html=categories_html,
         likes=bookmark.get("Favorite Count", 0),
         retweets=bookmark.get("Retweet Count", 0),
@@ -2591,6 +2704,12 @@ def cmd_generate(args: argparse.Namespace) -> None:
         with open(MASTER_CATEGORIES, "r", encoding="utf-8") as f:
             categories_data = json.load(f)
 
+    # Load quoted tweets cache if available
+    quoted_tweets = None
+    if MASTER_QUOTED_TWEETS.exists():
+        with open(MASTER_QUOTED_TWEETS, "r", encoding="utf-8") as f:
+            quoted_tweets = json.load(f)
+
     # Ensure directories exist
     (MASTER_HTML_DIR / "tweets").mkdir(parents=True, exist_ok=True)
     (MASTER_HTML_DIR / "categories").mkdir(parents=True, exist_ok=True)
@@ -2616,7 +2735,7 @@ def cmd_generate(args: argparse.Namespace) -> None:
         if not tweet_id:
             continue
 
-        tweet_html = render_tweet_card(bookmark, categories_data, include_detail_link=False)
+        tweet_html = render_tweet_card(bookmark, categories_data, include_detail_link=False, quoted_tweets=quoted_tweets)
         content = f"<h1>Tweet by @{bookmark.get('User Screen Name', 'unknown')}</h1>{tweet_html}"
 
         page_html = HTML_BASE.format(
@@ -3683,10 +3802,33 @@ def cmd_cleanup_raw(args: argparse.Namespace) -> None:
     json_count = len(list(RAW_JSON_DIR.glob("*.json"))) if RAW_JSON_DIR.exists() else 0
     media_dirs = len([d for d in RAW_MEDIA_DIR.iterdir() if d.is_dir()]) if RAW_MEDIA_DIR.exists() else 0
 
-    print(f"WARNING: This will PERMANENTLY delete original export data:")
+    # SAFETY CHECK: Verify master/bookmarks.json is complete before allowing deletion
+    raw_bookmarks = load_all_json_files()
+    raw_count = len(deduplicate_bookmarks(raw_bookmarks)) if raw_bookmarks else 0
+
+    master_count = 0
+    if MASTER_JSON.exists():
+        with open(MASTER_JSON, "r", encoding="utf-8") as f:
+            master_count = len(json.load(f))
+
+    if master_count == 0:
+        print("\n❌ SAFETY CHECK FAILED")
+        print("   master/bookmarks.json doesn't exist or is empty.")
+        print("   Run 'merge' or 'update' first before cleaning up raw files.")
+        return
+
+    if master_count < raw_count:
+        print(f"\n❌ SAFETY CHECK FAILED")
+        print(f"   Raw exports contain: {raw_count} unique bookmarks")
+        print(f"   Master file has:     {master_count} bookmarks")
+        print("   Run 'merge' or 'update' first to ensure all data is consolidated.")
+        return
+
+    print(f"\n✓ Safety check passed: master has {master_count} bookmarks (raw has {raw_count})")
+
+    print(f"\nWARNING: This will PERMANENTLY delete original export data:")
     print(f"  - {json_count} JSON files in {RAW_JSON_DIR}")
     print(f"  - {media_dirs} media export directories in {RAW_MEDIA_DIR}")
-    print("\nOnly do this after verifying master/ contains all your data!")
 
     confirm = input("\nType 'DELETE' to confirm: ")
     if confirm != "DELETE":
@@ -3698,10 +3840,15 @@ def cmd_cleanup_raw(args: argparse.Namespace) -> None:
 
 
 def cmd_update(args: argparse.Namespace) -> None:
-    """Incremental update: merge new, categorize new only, regenerate HTML"""
+    """Incremental update: merge existing + new, categorize new only, regenerate HTML.
+
+    This is the SAFE way to add new exports - it preserves existing bookmarks in
+    master/bookmarks.json and only adds new ones from raw/json/.
+    """
     print("=== Incremental Update ===")
 
     # Step 1: Load existing data
+    existing_bookmarks: list = []
     existing_ids: set[str] = set()
     existing_categories: dict = {"categories": {}, "tweet_categories": {}}
 
@@ -3716,21 +3863,39 @@ def cmd_update(args: argparse.Namespace) -> None:
             existing_categories = json.load(f)
         print(f"Existing categories: {len(existing_categories.get('categories', {}))}")
 
-    # Step 2: Merge new JSON files
+    # Step 2: Load new JSON files from raw/json/
     print("\n--- Merging new bookmarks ---")
-    all_bookmarks = load_all_json_files()
-    if not all_bookmarks:
-        print("No new JSON files found.")
+    raw_bookmarks = load_all_json_files()
+
+    # Handle case where neither source has data
+    if not raw_bookmarks and not existing_bookmarks:
+        print("No bookmarks found (neither in raw/json/ nor master/).")
         return
 
-    deduped = deduplicate_bookmarks(all_bookmarks)
-    new_ids = {b["Tweet Id"] for b in deduped} - existing_ids
-    print(f"New bookmarks to process: {len(new_ids)}")
+    # If no new files but we have existing data, just continue with existing
+    if not raw_bookmarks:
+        print("No new JSON files found in raw/json/.")
+        if not existing_bookmarks:
+            return
+        print("Continuing with existing bookmarks only...")
+        deduped = existing_bookmarks
+        new_ids = set()
+    else:
+        # CRITICAL FIX: Combine existing + raw, then deduplicate
+        # This preserves existing bookmarks even if raw/json/ is incomplete
+        all_bookmarks = existing_bookmarks + raw_bookmarks
+        deduped = deduplicate_bookmarks(all_bookmarks)
+        new_ids = {b["Tweet Id"] for b in deduped} - existing_ids
+        print(f"New bookmarks to process: {len(new_ids)}")
 
     # Sort and save merged bookmarks - parse actual date, not string sort
     from datetime import timezone
     deduped.sort(key=lambda x: parse_tweet_date(x.get("Created At", "")) or datetime.min.replace(tzinfo=timezone.utc), reverse=True)
     MASTER_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Backup before overwriting
+    backup_master_json()
+
     with open(MASTER_JSON, "w", encoding="utf-8") as f:
         json.dump(deduped, f, indent=2, ensure_ascii=False)
     print(f"Saved {len(deduped)} total bookmarks to {MASTER_JSON}")
@@ -4393,7 +4558,7 @@ def fix_paths_for_server(html: str) -> str:
 
 
 def generate_html_server(output_dir: Path, bookmarks: list[dict], categories_data: dict,
-                         stories_data: dict) -> None:
+                         stories_data: dict, quoted_tweets: dict | None = None) -> None:
     """Generate HTML pages for server deployment with local media paths"""
     html_dir = output_dir / "html"
     html_dir.mkdir(parents=True, exist_ok=True)
@@ -4871,7 +5036,7 @@ document.querySelectorAll('.year-link').forEach(link => {{
             key=lambda x: parse_tweet_date(x.get("Created At", "")) or datetime.min.replace(tzinfo=None),
             reverse=True
         )
-        tweets_html = "\n".join(render_tweet_card(b, categories_data, use_server=True) for b in cat_tweets)
+        tweets_html = "\n".join(render_tweet_card(b, categories_data, use_server=True, quoted_tweets=quoted_tweets) for b in cat_tweets)
         synonyms_json = json.dumps(SYNONYMS_DICT)
         content = f'''
 <h1>{cat_info.get("name", cat_id)}</h1>
@@ -5021,6 +5186,157 @@ function applyFilters() {{
 SERVER_HTML_DIR = BASE_DIR / "server" / "html"
 
 
+def fetch_quoted_tweet(tweet_url: str) -> Optional[dict]:
+    """Fetch tweet data via Twitter's oEmbed API.
+
+    Args:
+        tweet_url: Full URL to the tweet (e.g., https://x.com/user/status/123)
+
+    Returns:
+        dict with author_name, author_handle, html, fetched_at, or None if failed
+    """
+    import urllib.request
+    import urllib.parse
+    import time
+
+    # Twitter oEmbed API endpoint
+    oembed_url = f"https://publish.twitter.com/oembed?url={urllib.parse.quote(tweet_url)}&omit_script=true"
+
+    try:
+        req = urllib.request.Request(
+            oembed_url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; BookmarkMerger/1.0)"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as response:
+            data = json.loads(response.read().decode())
+            return {
+                "author_name": data.get("author_name"),
+                "author_handle": data.get("author_url", "").rstrip("/").split("/")[-1],
+                "html": data.get("html"),
+                "url": tweet_url,
+                "fetched_at": datetime.now().isoformat()
+            }
+    except Exception as e:
+        return None
+
+
+def extract_quoted_tweet_urls(bookmark: dict) -> list[str]:
+    """Extract twitter/x status URLs from a bookmark's Expanded URLs field.
+
+    Returns:
+        List of tweet URLs found in the bookmark
+    """
+    import re
+
+    expanded_urls = bookmark.get("Expanded URLs", "")
+    if not expanded_urls:
+        return []
+
+    # Match twitter.com or x.com status URLs
+    pattern = re.compile(r"https://(twitter\.com|x\.com)/\w+/status/(\d+)")
+    matches = pattern.findall(expanded_urls)
+
+    # Reconstruct full URLs (prefer x.com format)
+    urls = [f"https://x.com/{m[0].replace('twitter.com/', '').replace('x.com/', '')}/status/{m[1]}"
+            for m in matches]
+
+    # Actually, let's extract the full URLs properly
+    urls = []
+    for line in expanded_urls.split("\n"):
+        line = line.strip()
+        if pattern.match(line):
+            urls.append(line)
+
+    return urls
+
+
+def extract_tweet_id_from_url(url: str) -> Optional[str]:
+    """Extract tweet ID from a twitter/x URL."""
+    import re
+    match = re.search(r"/status/(\d+)", url)
+    return match.group(1) if match else None
+
+
+def cmd_fetch_quotes(args: argparse.Namespace) -> None:
+    """Fetch quoted tweets and cache them for HTML display."""
+    import time
+
+    print("=== Fetching Quoted Tweets ===")
+
+    # Load bookmarks
+    if not MASTER_JSON.exists():
+        print("Error: No bookmarks found. Run 'merge' first.")
+        return
+
+    with open(MASTER_JSON, "r", encoding="utf-8") as f:
+        bookmarks = json.load(f)
+
+    # Load existing cache (or create empty)
+    cache = {"fetched": {}, "failed": {}}
+    if MASTER_QUOTED_TWEETS.exists():
+        with open(MASTER_QUOTED_TWEETS, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+
+    # Find tweets with quoted tweet URLs
+    tweets_with_quotes = []
+    for bookmark in bookmarks:
+        urls = extract_quoted_tweet_urls(bookmark)
+        if urls:
+            tweets_with_quotes.append({
+                "bookmark_id": bookmark.get("Tweet Id"),
+                "quoted_urls": urls
+            })
+
+    print(f"Found {len(tweets_with_quotes)} bookmarks with quoted tweets")
+
+    # Count how many need fetching
+    urls_to_fetch = []
+    for item in tweets_with_quotes:
+        for url in item["quoted_urls"]:
+            tweet_id = extract_tweet_id_from_url(url)
+            if tweet_id and tweet_id not in cache["fetched"] and tweet_id not in cache["failed"]:
+                urls_to_fetch.append((tweet_id, url))
+
+    print(f"Already cached: {len(cache['fetched'])} fetched, {len(cache['failed'])} failed")
+    print(f"Need to fetch: {len(urls_to_fetch)}")
+
+    if not urls_to_fetch:
+        print("\nNo new quoted tweets to fetch.")
+        return
+
+    # Fetch each quoted tweet with rate limiting
+    fetched_count = 0
+    failed_count = 0
+
+    for i, (tweet_id, url) in enumerate(urls_to_fetch):
+        print(f"  Fetching {i+1}/{len(urls_to_fetch)}: {url}")
+
+        result = fetch_quoted_tweet(url)
+        if result:
+            cache["fetched"][tweet_id] = result
+            fetched_count += 1
+            print(f"    ✓ @{result['author_handle']}: {result['author_name']}")
+        else:
+            cache["failed"][tweet_id] = {
+                "url": url,
+                "error": "Failed to fetch via oEmbed",
+                "attempted_at": datetime.now().isoformat()
+            }
+            failed_count += 1
+            print(f"    ✗ Failed to fetch")
+
+        # Save after each fetch (in case of interruption)
+        with open(MASTER_QUOTED_TWEETS, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2)
+
+        # Rate limit: 1 second between requests
+        if i < len(urls_to_fetch) - 1:
+            time.sleep(1)
+
+    print(f"\nDone! Fetched: {fetched_count}, Failed: {failed_count}")
+    print(f"Cache saved to {MASTER_QUOTED_TWEETS}")
+
+
 def cmd_publish_server(args: argparse.Namespace) -> None:
     """Generate HTML for server deployment (to be synced via rsync)"""
 
@@ -5042,6 +5358,12 @@ def cmd_publish_server(args: argparse.Namespace) -> None:
         with open(MASTER_STORIES, "r", encoding="utf-8") as f:
             stories_data = json.load(f)
 
+    # Load quoted tweets cache if available
+    quoted_tweets = None
+    if MASTER_QUOTED_TWEETS.exists():
+        with open(MASTER_QUOTED_TWEETS, "r", encoding="utf-8") as f:
+            quoted_tweets = json.load(f)
+
     print("=== Generating HTML for Server Deployment ===")
 
     # Create server output directory
@@ -5049,7 +5371,7 @@ def cmd_publish_server(args: argparse.Namespace) -> None:
     server_dir.mkdir(exist_ok=True)
 
     # Generate HTML with server media paths
-    generate_html_server(server_dir, bookmarks, categories_data, stories_data)
+    generate_html_server(server_dir, bookmarks, categories_data, stories_data, quoted_tweets)
 
     print(f"\n✓ Generated server HTML in {SERVER_HTML_DIR}")
     print(f"\nTo deploy, sync to server:")
@@ -5058,31 +5380,31 @@ def cmd_publish_server(args: argparse.Namespace) -> None:
 
 
 def cmd_sync(args: argparse.Namespace) -> None:
-    """Full sync: merge, consolidate, categorize new, generate HTML, and deploy to server"""
+    """Full sync: consolidate media, merge + categorize new, generate HTML, and deploy to server.
+
+    Note: cmd_update now safely merges existing + new bookmarks, so we no longer call
+    cmd_merge separately (which could overwrite data if raw/json/ is incomplete).
+    """
     import subprocess
 
     print("=" * 60)
     print("=== FULL SYNC: New content → Server ===")
     print("=" * 60)
 
-    # Step 1: Merge
-    print("\n[1/5] Merging JSON files...")
-    cmd_merge(args)
-
-    # Step 2: Consolidate media
-    print("\n[2/5] Consolidating media files...")
+    # Step 1: Consolidate media (safe, idempotent)
+    print("\n[1/4] Consolidating media files...")
     cmd_consolidate(args)
 
-    # Step 3: Update (categorizes new bookmarks and regenerates HTML)
-    print("\n[3/5] Categorizing new bookmarks and generating HTML...")
+    # Step 2: Update (safely merges existing + new, categorizes new only, regenerates HTML)
+    print("\n[2/4] Updating bookmarks (merge + categorize)...")
     cmd_update(args)
 
-    # Step 4: Generate server HTML
-    print("\n[4/5] Generating server HTML...")
+    # Step 3: Generate server HTML
+    print("\n[3/4] Generating server HTML...")
     cmd_publish_server(args)
 
-    # Step 5: Deploy to server
-    print("\n[5/5] Deploying to server...")
+    # Step 4: Deploy to server
+    print("\n[4/4] Deploying to server...")
     deploy_script = BASE_DIR / "scripts" / "deploy-bookmarks.sh"
     if deploy_script.exists():
         # Deploy HTML first (fast)
@@ -5258,7 +5580,8 @@ def main():
 
     subparsers = parser.add_subparsers(dest="command", help="Command to run")
 
-    subparsers.add_parser("merge", help="Merge and deduplicate JSON files")
+    merge_parser = subparsers.add_parser("merge", help="Merge and deduplicate JSON files from raw/json/")
+    merge_parser.add_argument("--force", action="store_true", help="Override data loss protection (use with caution)")
     subparsers.add_parser("consolidate", help="Consolidate media files")
     subparsers.add_parser("categorize", help="Categorize bookmarks with AI")
     subparsers.add_parser("generate", help="Generate HTML pages")
@@ -5285,6 +5608,7 @@ def main():
     subparsers.add_parser("unpublish", help="Remove from GitHub Pages (DESTRUCTIVE)")
     subparsers.add_parser("publish-server", help="Generate HTML for server deployment (twitter.dethele.com)")
     subparsers.add_parser("thumbnails", help="Generate video thumbnails (requires ffmpeg)")
+    subparsers.add_parser("fetch-quotes", help="Fetch quoted tweets and cache for HTML display")
 
     # Sync command - full workflow
     sync_parser = subparsers.add_parser("sync", help="Full sync: merge, categorize, generate, deploy to server")
@@ -5313,6 +5637,7 @@ def main():
         "publish-server": cmd_publish_server,
         "thumbnails": cmd_thumbnails,
         "sync": cmd_sync,
+        "fetch-quotes": cmd_fetch_quotes,
     }
 
     commands[args.command](args)
