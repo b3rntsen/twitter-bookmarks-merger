@@ -125,7 +125,24 @@ docker-compose -f docker-compose.prod.yml up -d --build
 
 ## Important Rules
 
-- **Adding new exports**: Use `update` command - it only categorizes NEW bookmarks, preserving existing categorizations and saving API calls.
-- **`clean` vs `cleanup-raw`**: These are intentionally separate commands. `clean` removes generated files and is safe to run anytime. `cleanup-raw` deletes original export data and should only be run after QA.
+- **Adding new exports**: Use `update` or `sync` command - they safely merge existing + new bookmarks and only categorize NEW ones, preserving existing data and saving API calls.
+- **`clean` vs `cleanup-raw`**: These are intentionally separate commands. `clean` removes generated files and is safe to run anytime. `cleanup-raw` deletes original export data and has safety checks.
 - **Re-running**: To regenerate all output, run `clean` then `all`. Never need to delete raw data to re-process.
 - **Dependencies**: When adding new Python dependencies, add them to `requirements.txt`.
+
+## Data Safety Features
+
+The tool has several safeguards to prevent accidental data loss:
+
+1. **Auto-backup**: Before overwriting `master/bookmarks.json`, a timestamped backup is created in `master/backups/` (keeps last 5).
+
+2. **Data loss detection in `merge`**: If `merge` would reduce the bookmark count (because `raw/json/` is missing old exports), it warns and aborts. Use `--force` to override:
+   ```bash
+   python3 tools/bookmark_merger.py merge --force  # Override data loss protection
+   ```
+
+3. **Safe merging in `update`/`sync`**: These commands merge existing `master/bookmarks.json` + new `raw/json/` exports, so existing bookmarks are never lost even if raw files are deleted.
+
+4. **Verification in `cleanup-raw`**: Before deleting raw files, it verifies that `master/bookmarks.json` has at least as many bookmarks as `raw/json/`. If not, it blocks deletion.
+
+**Best Practice**: Always use `update` or `sync` instead of `merge` for incremental additions. Only use `merge` when you have ALL export files in `raw/json/`.
