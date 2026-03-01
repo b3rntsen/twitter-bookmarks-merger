@@ -20,6 +20,12 @@ python3 tools/bookmark_merger.py generate     # Generate HTML → master/html/
 python3 tools/bookmark_merger.py export       # Export for NotebookLM → master/exports/
 python3 tools/bookmark_merger.py all          # Run merge, consolidate, generate, export
 
+
+# Fetch bookmarks via birdmarks (uses Twitter API with cookies)
+python3 tools/bookmark_merger.py fetch              # Fetch 2 pages (~80 bookmarks) safely
+python3 tools/bookmark_merger.py fetch --max-pages 5 # Fetch more pages
+python3 tools/bookmark_merger.py fetch --dry-run    # Preview without fetching
+
 # Full sync - ONE COMMAND to process new exports and deploy (RECOMMENDED)
 python3 tools/bookmark_merger.py sync              # Merge, categorize, generate, deploy HTML
 python3 tools/bookmark_merger.py sync --with-media # Also sync media files (slower)

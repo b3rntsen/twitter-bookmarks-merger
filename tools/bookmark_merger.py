@@ -5249,6 +5249,26 @@ def cmd_unpublish(args: argparse.Namespace) -> None:
         print(f"\n✓ Unpublished {PUBLISH_SUBDIR}/ from {GITHUB_PAGES_REPO}")
 
 
+
+def cmd_fetch(args):
+    """Fetch new bookmarks via birdmarks."""
+    import subprocess
+    
+    bridge_script = Path(__file__).parent / "birdmarks_bridge.py"
+    if not bridge_script.exists():
+        print(f"❌ Bridge script not found: {bridge_script}")
+        return
+    
+    cmd = [sys.executable, str(bridge_script)]
+    
+    if hasattr(args, 'max_pages') and args.max_pages:
+        cmd.extend(["--max-pages", str(args.max_pages)])
+    
+    if hasattr(args, 'dry_run') and args.dry_run:
+        cmd.append("--dry-run")
+    
+    subprocess.run(cmd)
+
 def main():
     parser = argparse.ArgumentParser(
         description="Twitter Bookmarks Merger Tool",
@@ -5290,6 +5310,14 @@ def main():
     sync_parser = subparsers.add_parser("sync", help="Full sync: merge, categorize, generate, deploy to server")
     sync_parser.add_argument("--with-media", action="store_true", help="Also sync media files (slower)")
 
+    # Fetch command - pull bookmarks via birdmarks
+    fetch_parser = subparsers.add_parser("fetch", help="Fetch new bookmarks via birdmarks API")
+    fetch_parser.add_argument("--max-pages", type=int, default=2, help="Max pages to fetch (default: 2, ~80 bookmarks)")
+    fetch_parser.add_argument("--dry-run", action="store_true", help="Show what would happen without fetching")
+
+    
+    # Fetch command - pull bookmarks via birdmarks
+
     args = parser.parse_args()
 
     if not args.command:
@@ -5313,6 +5341,8 @@ def main():
         "publish-server": cmd_publish_server,
         "thumbnails": cmd_thumbnails,
         "sync": cmd_sync,
+        "fetch": cmd_fetch,
+        "fetch": cmd_fetch,
     }
 
     commands[args.command](args)
@@ -5320,3 +5350,9 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+# ========================
+# Fetch command (birdmarks)
+# ========================
+
