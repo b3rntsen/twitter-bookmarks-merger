@@ -122,19 +122,19 @@ services:
     volumes:
       - certbot-etc:/etc/letsencrypt
       - certbot-www:/var/www/certbot
-    # Auto-renewal: checks once per day (86400 seconds = 24 hours)
+    # Auto-renewal: checks twice per day (43200 seconds = 12 hours)
     # Only renews if certificates are within 30 days of expiry (Let's Encrypt default)
     # Uses --quiet to reduce CPU usage and logging
-    # Uses --no-random-sleep-on-renew to avoid random delays
+    # Note: After renewal, run scripts/reload-nginx-after-cert-renewal.sh on the host
     entrypoint: "/bin/sh"
     command: >
       -c "
       trap exit TERM;
       while :; do
         # Check and renew certificates (only renews if within 30 days of expiry)
-        certbot renew --quiet --no-random-sleep-on-renew --deploy-hook 'docker exec $$(docker ps -q -f name=nginx) nginx -s reload' || true;
-        # Sleep for 24 hours (86400 seconds) before next check
-        sleep 86400;
+        certbot renew --quiet --no-random-sleep-on-renew || true;
+        # Sleep for 12 hours (43200 seconds) before next check
+        sleep 43200;
       done;
       "
     restart: always
