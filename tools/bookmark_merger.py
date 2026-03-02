@@ -5575,21 +5575,81 @@ def cmd_unpublish(args: argparse.Namespace) -> None:
 def cmd_fetch(args):
     """Fetch new bookmarks via birdmarks."""
     import subprocess
-    
+
     bridge_script = Path(__file__).parent / "birdmarks_bridge.py"
     if not bridge_script.exists():
         print(f"❌ Bridge script not found: {bridge_script}")
         return
-    
+
     cmd = [sys.executable, str(bridge_script)]
-    
+
     if hasattr(args, 'max_pages') and args.max_pages:
         cmd.extend(["--max-pages", str(args.max_pages)])
-    
+
+    if hasattr(args, 'until_synced') and args.until_synced:
+        cmd.append("--until-synced")
+
     if hasattr(args, 'dry_run') and args.dry_run:
         cmd.append("--dry-run")
-    
+
     subprocess.run(cmd)
+
+
+def cmd_fetch_status(args):
+    """Show current fetch status and progress."""
+    cache_dir = Path(__file__).parent.parent / "birdmarks_cache"
+    state_file = cache_dir / "exporter-state.json"
+
+    print("📊 Fetch Status")
+    print("=" * 40)
+
+    # Check if cache exists
+    if not cache_dir.exists() or not state_file.exists():
+        print("   No active fetch session")
+        print("   Run 'python3 tools/bookmark_merger.py fetch --until-synced' to start")
+        return
+
+    # Load state
+    try:
+        with open(state_file, 'r') as f:
+            state = json.load(f)
+    except Exception as e:
+        print(f"   ❌ Could not read state file: {e}")
+        return
+
+    # Show status
+    if state.get("allBookmarksProcessed"):
+        print("   ✅ All bookmarks fetched - gap filled!")
+        print("")
+        print("Next step: Run 'python3 tools/bookmark_merger.py update' to merge")
+    elif state.get("nextCursor"):
+        print("   🔄 Fetch in progress (rate limited)")
+        total_exported = state.get("totalExported", 0)
+        if total_exported > 0:
+            print(f"   📊 Progress: {total_exported} bookmarks exported so far")
+        print("")
+        print("Next: Run 'python3 tools/bookmark_merger.py fetch --until-synced' to resume")
+        print("Or: Run './scripts/fetch-until-synced.sh' to auto-loop until done")
+    else:
+        print("   🆕 Ready to start fresh fetch")
+
+    # Count markdown files
+    md_count = len(list(cache_dir.glob("*.md")))
+    if md_count > 0:
+        print(f"   📄 {md_count} markdown files cached")
+
+
+def cmd_clean_cache(args):
+    """Clean birdmarks cache directory (state file and markdown files)."""
+    import shutil
+
+    cache_dir = Path(__file__).parent.parent / "birdmarks_cache"
+    if cache_dir.exists():
+        shutil.rmtree(cache_dir)
+        print(f"✅ Cleaned cache: {cache_dir}")
+    else:
+        print(f"   No cache to clean")
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -5637,10 +5697,11 @@ def main():
     # Fetch command - pull bookmarks via birdmarks
     fetch_parser = subparsers.add_parser("fetch", help="Fetch new bookmarks via birdmarks API")
     fetch_parser.add_argument("--max-pages", type=int, default=2, help="Max pages to fetch (default: 2, ~80 bookmarks)")
+    fetch_parser.add_argument("--until-synced", action="store_true", help="Keep fetching until reaching last synced bookmark")
     fetch_parser.add_argument("--dry-run", action="store_true", help="Show what would happen without fetching")
 
-    
-    # Fetch command - pull bookmarks via birdmarks
+    # Clean cache command
+    subparsers.add_parser("clean-cache", help="Clean birdmarks cache directory (state file and markdown files)")
 
     args = parser.parse_args()
 
@@ -5667,6 +5728,8 @@ def main():
         "sync": cmd_sync,
         "fetch": cmd_fetch,
         "fetch-quotes": cmd_fetch_quotes,
+        "fetch-status": cmd_fetch_status,
+        "clean-cache": cmd_clean_cache,
     }
 
     commands[args.command](args)

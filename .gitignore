@@ -11,6 +11,7 @@ raw/media/*
 !raw/media/.gitignore
 master/
 server/
+birdmarks_cache/
 
 # Django
 *.sqlite3
