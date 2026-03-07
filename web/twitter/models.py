@@ -1,9 +1,14 @@
 from django.db import models
 from django.contrib.auth.models import User
+from django.core.validators import MinValueValidator, MaxValueValidator
+from django.core.exceptions import ValidationError
 from cryptography.fernet import Fernet
 from django.conf import settings
 import base64
 import os
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 def get_encryption_key():
@@ -77,6 +82,181 @@ class TwitterProfile(models.Model):
 
     def __str__(self):
         return f"{self.user.email} - @{self.twitter_username}"
+
+
+class BookmarkSyncSchedule(models.Model):
+    """Configuration for automated bookmark syncing."""
+    twitter_profile = models.OneToOneField(
+        TwitterProfile,
+        on_delete=models.CASCADE,
+        related_name='sync_schedule'
+    )
+
+    # Schedule configuration
+    enabled = models.BooleanField(default=True)
+    interval_minutes = models.IntegerField(
+        default=60,
+        help_text="Base interval between syncs (minutes)"
+    )
+    randomize_minutes = models.IntegerField(
+        default=15,
+        help_text="Random variation to add (±minutes)"
+    )
+
+    # Active hours (user's local timezone)
+    timezone = models.CharField(max_length=50, default='Europe/Copenhagen')
+    start_hour = models.IntegerField(
+        default=8,
+        help_text="Start hour (0-23)",
+        validators=[MinValueValidator(0), MaxValueValidator(23)]
+    )
+    end_hour = models.IntegerField(
+        default=24,
+        help_text="End hour (1-24, where 24 = end of day)",
+        validators=[MinValueValidator(1), MaxValueValidator(24)]
+    )
+
+    # Fetch configuration
+    max_pages = models.IntegerField(default=2, help_text="Pages to fetch (~40 bookmarks per page)")
+    use_until_synced = models.BooleanField(
+        default=False,
+        help_text="Use gap-free sync mode (rebuild)"
+    )
+
+    # Status tracking
+    last_scheduled_at = models.DateTimeField(null=True, blank=True)
+    next_sync_at = models.DateTimeField(null=True, blank=True)
+    consecutive_failures = models.IntegerField(default=0)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Bookmark Sync Schedule"
+        verbose_name_plural = "Bookmark Sync Schedules"
+
+    def __str__(self):
+        return f"Sync Schedule for {self.twitter_profile.twitter_username}"
+
+    MAX_CONSECUTIVE_FAILURES = 5
+
+    def clean(self):
+        """Validate active hours."""
+        super().clean()
+        if self.start_hour < 0 or self.start_hour > 23:
+            raise ValidationError({'start_hour': 'Must be between 0 and 23'})
+        if self.end_hour < 1 or self.end_hour > 24:
+            raise ValidationError({'end_hour': 'Must be between 1 and 24'})
+        if self.end_hour != 24 and self.start_hour >= self.end_hour:
+            raise ValidationError('start_hour must be less than end_hour')
+
+    def should_disable_due_to_failures(self):
+        """Check if schedule should be disabled due to too many failures."""
+        return self.consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES
+
+    def disable_due_to_failures(self):
+        """Disable schedule due to excessive failures."""
+        if self.consecutive_failures >= self.MAX_CONSECUTIVE_FAILURES:
+            self.enabled = False
+            self.save()
+            logger.warning(
+                f"Disabled sync schedule for {self.twitter_profile.twitter_username} "
+                f"after {self.consecutive_failures} consecutive failures"
+            )
+            return True
+        return False
+
+    def calculate_next_sync(self):
+        """Calculate next sync time with randomization and active hours."""
+        import random
+        from datetime import datetime, time as dt_time, timedelta
+        import pytz
+
+        # Validate timezone with fallback
+        try:
+            tz = pytz.timezone(self.timezone)
+        except pytz.UnknownTimeZoneError:
+            logger.error(f"Invalid timezone '{self.timezone}', falling back to UTC")
+            tz = pytz.UTC
+
+        now = datetime.now(tz)
+
+        # Add base interval + randomization
+        random_offset = random.randint(-self.randomize_minutes, self.randomize_minutes)
+        next_time = now + timedelta(minutes=self.interval_minutes + random_offset)
+
+        # Normalize end_hour: 24 means "end of day" (no upper bound)
+        effective_end_hour = 24 if self.end_hour == 24 else self.end_hour
+
+        # If outside active hours, move to next start_hour
+        if next_time.hour < self.start_hour:
+            # Before start hour - move to today's start_hour
+            next_time = tz.localize(
+                datetime.combine(next_time.date(), dt_time(self.start_hour, 0, 0))
+            )
+        elif effective_end_hour != 24 and next_time.hour >= effective_end_hour:
+            # After end hour - move to tomorrow's start_hour
+            tomorrow = next_time.date() + timedelta(days=1)
+            next_time = tz.localize(
+                datetime.combine(tomorrow, dt_time(self.start_hour, 0, 0))
+            )
+
+        # Ensure next_time is in the future
+        if next_time <= now:
+            next_time = now + timedelta(minutes=self.interval_minutes)
+
+        return next_time.astimezone(pytz.UTC)
+
+
+class BookmarkSyncJob(models.Model):
+    """Track bookmark sync job execution."""
+    STATUS_CHOICES = [
+        ('pending', 'Pending'),
+        ('running', 'Running'),
+        ('success', 'Success'),
+        ('failed', 'Failed'),
+    ]
+
+    twitter_profile = models.ForeignKey(
+        TwitterProfile,
+        on_delete=models.CASCADE,
+        related_name='sync_jobs'
+    )
+
+    # Timing
+    scheduled_at = models.DateTimeField()
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    # Status
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending',
+        db_index=True
+    )
+
+    # Results
+    bookmarks_fetched = models.IntegerField(default=0)
+    pages_fetched = models.IntegerField(default=0)
+    error_message = models.TextField(blank=True)
+    error_type = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="e.g., 'cookie_expired', 'rate_limit', 'network_error'"
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-scheduled_at']
+        indexes = [
+            models.Index(fields=['twitter_profile', '-scheduled_at']),
+            models.Index(fields=['status', 'scheduled_at']),
+        ]
+
+    def __str__(self):
+        return f"Sync Job #{self.id} - {self.twitter_profile.twitter_username} ({self.status})"
 
 
 class Tweet(models.Model):
