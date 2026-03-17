@@ -16,7 +16,8 @@ urlpatterns = [
     path('accounts/', include('allauth.urls')),
     path('accounts/', include('accounts.urls')),
 
-    # Django app moved to /new-gen/
+    # Django admin (accessible from /admin/ on the static site)
+    path('admin/', admin.site.urls),
     path('new-gen/admin/', admin.site.urls),
     path('new-gen/', include('bookmarks_app.urls')),
     path('new-gen/twitter/', include('twitter.urls')),
