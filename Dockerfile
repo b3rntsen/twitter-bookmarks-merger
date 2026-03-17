@@ -90,7 +90,8 @@ ENV PYTHONPATH="/app/web:/app:${PYTHONPATH}"
 RUN echo '#!/bin/bash\n\
 set -e\n\
 python manage.py migrate --noinput\n\
-python manage.py collectstatic --noinput || true\n\
+python manage.py collectstatic --noinput\n\
+python manage.py start_bookmark_sync || true\n\
 exec "$@"' > /entrypoint.sh && chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]

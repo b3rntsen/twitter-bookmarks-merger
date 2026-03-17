@@ -70,6 +70,7 @@ services:
     volumes:
       - media:/app/media
       - db_data:/app/db
+      - ./birdmarks:/app/birdmarks:ro
     env_file:
       - .env
     environment:

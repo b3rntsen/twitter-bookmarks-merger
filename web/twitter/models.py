@@ -127,6 +127,8 @@ class BookmarkSyncSchedule(models.Model):
     last_scheduled_at = models.DateTimeField(null=True, blank=True)
     next_sync_at = models.DateTimeField(null=True, blank=True)
     consecutive_failures = models.IntegerField(default=0)
+    backoff_multiplier = models.IntegerField(default=1, help_text="Multiplier for interval on transient failures (1-12)")
+    last_error_type = models.CharField(max_length=50, blank=True, help_text="Type of last error (e.g. cookie_expired, timeout)")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -181,9 +183,10 @@ class BookmarkSyncSchedule(models.Model):
 
         now = datetime.now(tz)
 
-        # Add base interval + randomization
+        # Add base interval (with backoff) + randomization
+        effective_interval = self.interval_minutes * self.backoff_multiplier
         random_offset = random.randint(-self.randomize_minutes, self.randomize_minutes)
-        next_time = now + timedelta(minutes=self.interval_minutes + random_offset)
+        next_time = now + timedelta(minutes=effective_interval + random_offset)
 
         # Normalize end_hour: 24 means "end of day" (no upper bound)
         effective_end_hour = 24 if self.end_hour == 24 else self.end_hour

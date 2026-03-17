@@ -283,8 +283,10 @@ def execute_bookmark_sync(sync_job_id: int):
             job.bookmarks_fetched = bookmarks_count
             job.completed_at = timezone.now()
 
-            # Reset consecutive failures
+            # Reset consecutive failures and backoff
             schedule.consecutive_failures = 0
+            schedule.backoff_multiplier = 1
+            schedule.last_error_type = ''
 
             # Update TwitterProfile
             profile.last_sync_at = timezone.now()
@@ -311,8 +313,9 @@ def execute_bookmark_sync(sync_job_id: int):
             job.error_type = error_type
             job.completed_at = timezone.now()
 
-            # Increment consecutive failures
+            # Increment consecutive failures and track error type
             schedule.consecutive_failures += 1
+            schedule.last_error_type = error_type
 
             logger.error(f"Bookmark sync failed for {profile.twitter_username}: {error_type}")
 
@@ -324,14 +327,24 @@ def execute_bookmark_sync(sync_job_id: int):
         schedule.save()
         job.save()
 
-        # Check if we should disable due to excessive failures
-        if schedule.should_disable_due_to_failures():
-            schedule.disable_due_to_failures()
-            profile.sync_status = 'error'
-            profile.sync_error_message = f'Sync disabled after {schedule.consecutive_failures} consecutive failures'
-            profile.save()
+        # Handle failure: cookie_expired disables after 5 failures; transient errors use backoff
+        if job.status == 'failed':
+            if error_type == 'cookie_expired' and schedule.should_disable_due_to_failures():
+                schedule.disable_due_to_failures()
+                profile.sync_status = 'error'
+                profile.sync_error_message = f'Sync disabled: cookies expired ({schedule.consecutive_failures} failures)'
+                profile.save()
+            elif error_type != 'cookie_expired':
+                # Transient error: increase backoff, always reschedule
+                schedule.backoff_multiplier = min(schedule.backoff_multiplier * 2, 12)
+                schedule.save()
+                logger.info(f"Transient failure for {profile.twitter_username}, backoff={schedule.backoff_multiplier}x")
+                schedule_next_bookmark_sync(profile.id)
+            else:
+                # cookie_expired but under threshold: still reschedule (user may fix cookies)
+                schedule_next_bookmark_sync(profile.id)
         elif schedule.enabled:
-            # Schedule next sync
+            # Success: schedule next sync
             schedule_next_bookmark_sync(profile.id)
 
     except subprocess.TimeoutExpired:
@@ -344,21 +357,16 @@ def execute_bookmark_sync(sync_job_id: int):
 
         logger.error(f"Bookmark sync timeout for job #{job.id}")
 
-        # Refetch profile to avoid stale data
+        # Transient error: increase backoff and reschedule
         try:
             profile_refresh = TwitterProfile.objects.select_related('sync_schedule').get(id=job.twitter_profile_id)
             schedule = profile_refresh.sync_schedule
             schedule.consecutive_failures += 1
+            schedule.last_error_type = 'timeout'
+            schedule.backoff_multiplier = min(schedule.backoff_multiplier * 2, 12)
             schedule.save()
-
-            # Check if we should disable
-            if schedule.should_disable_due_to_failures():
-                schedule.disable_due_to_failures()
-                profile_refresh.sync_status = 'error'
-                profile_refresh.sync_error_message = f'Sync disabled after {schedule.consecutive_failures} consecutive failures'
-                profile_refresh.save()
-            elif schedule.enabled:
-                schedule_next_bookmark_sync(profile_refresh.id)
+            logger.info(f"Timeout for {profile_refresh.twitter_username}, backoff={schedule.backoff_multiplier}x")
+            schedule_next_bookmark_sync(profile_refresh.id)
         except Exception as schedule_error:
             logger.error(f"Failed to schedule next sync after timeout for profile {job.twitter_profile_id}: {schedule_error}")
 
@@ -372,21 +380,16 @@ def execute_bookmark_sync(sync_job_id: int):
         job.completed_at = timezone.now()
         job.save()
 
-        # Refetch profile to avoid stale data
+        # Transient error: increase backoff and reschedule
         try:
             profile_refresh = TwitterProfile.objects.select_related('sync_schedule').get(id=job.twitter_profile_id)
             schedule = profile_refresh.sync_schedule
             schedule.consecutive_failures += 1
+            schedule.last_error_type = 'system_error'
+            schedule.backoff_multiplier = min(schedule.backoff_multiplier * 2, 12)
             schedule.save()
-
-            # Check if we should disable
-            if schedule.should_disable_due_to_failures():
-                schedule.disable_due_to_failures()
-                profile_refresh.sync_status = 'error'
-                profile_refresh.sync_error_message = f'Sync disabled after {schedule.consecutive_failures} consecutive failures'
-                profile_refresh.save()
-            elif schedule.enabled:
-                schedule_next_bookmark_sync(profile_refresh.id)
+            logger.info(f"System error for {profile_refresh.twitter_username}, backoff={schedule.backoff_multiplier}x")
+            schedule_next_bookmark_sync(profile_refresh.id)
         except Exception as schedule_error:
             logger.error(f"Failed to schedule next sync after error for profile {job.twitter_profile_id}: {schedule_error}")
 
