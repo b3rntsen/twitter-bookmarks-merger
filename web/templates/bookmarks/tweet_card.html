@@ -98,7 +98,7 @@ Parameters:
     
     {% if show_media|default:True and media %}
         <div class="tweet-media">
-            {% for item in media|slice:":1" %}
+            {% for item in media %}
                 {% if item.media_type == 'image' or item.media_type == 'gif' %}
                     <div class="media-image-wrapper">
                         <img src="{{ MEDIA_URL }}{{ item.file_path }}" alt="Tweet media" class="tweet-media-image">

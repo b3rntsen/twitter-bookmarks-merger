@@ -26,7 +26,13 @@
                     <a href="{% url 'lists:list_selection' %}">Lists</a>
                     <a href="{% url 'processing:processing_status' %}">Processing Status</a>
                     <a href="{% url 'twitter:connect' %}">Connect Twitter</a>
+                    {% if user.twitter_profiles.exists %}
+                        <a href="{% url 'twitter:bookmark_sync_status' %}">Sync Status</a>
+                    {% endif %}
                     <a href="{% url 'admin_panel' %}">Users</a>
+                    {% if user.is_superuser %}
+                        <a href="/new-gen/admin/">Django Admin</a>
+                    {% endif %}
                     <a href="{% url 'profile' %}">Profile</a>
                     <a href="{% url 'account_logout' %}">Logout</a>
                 {% else %}

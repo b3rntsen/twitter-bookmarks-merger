@@ -26,20 +26,49 @@ if [ "$DISK_USAGE" -gt 70 ]; then
     "cd ${PROJECT_DIR} && ./scripts/cleanup-docker.sh"
 fi
 
-# Deploy files (you can customize this section)
-echo "📦 Deploying files..."
-# Add your deployment commands here
-# Example: scp files, git pull, etc.
+# Deploy files using rsync (efficient, only uploads changed files)
+echo "📦 Syncing code to server..."
+rsync -avz --progress \
+  --exclude='.git' \
+  --exclude='.env' \
+  --exclude='__pycache__' \
+  --exclude='*.pyc' \
+  --exclude='.DS_Store' \
+  --exclude='._*' \
+  --exclude='venv' \
+  --exclude='.venv' \
+  --exclude='node_modules' \
+  --exclude='media' \
+  --exclude='staticfiles' \
+  --exclude='db.sqlite3' \
+  --exclude='*.log' \
+  --exclude='raw/' \
+  --exclude='master/' \
+  -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
+  "$(dirname "$(dirname "$0")")/" "${SERVER_USER}@${SERVER_HOST}:${PROJECT_DIR}/"
 
-# Rebuild Docker image
-echo "🔨 Rebuilding Docker image..."
-ssh -i "$SSH_KEY" "${SERVER_USER}@${SERVER_HOST}" \
-  "cd ${PROJECT_DIR} && docker build -t twitter-bookmarks-web ."
+echo ""
+echo "🔨 Rebuilding and restarting containers..."
+ssh -i "$SSH_KEY" "${SERVER_USER}@${SERVER_HOST}" << 'ENDSSH'
+cd /home/ec2-user/twitter-bookmarks
 
-# Restart services
-echo "🔄 Restarting services..."
-ssh -i "$SSH_KEY" "${SERVER_USER}@${SERVER_HOST}" \
-  "cd ${PROJECT_DIR} && docker compose -f docker-compose.prod.yml up -d"
+# Stop containers
+docker compose -f docker-compose.prod.yml down
+
+# Clean Python cache
+find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+find . -type f -name "*.pyc" -delete 2>/dev/null || true
+
+# Rebuild and start
+docker compose -f docker-compose.prod.yml up -d --build
+
+# Wait for services to be healthy
+echo "⏳ Waiting for services to start..."
+sleep 10
+
+# Show service status
+docker compose -f docker-compose.prod.yml ps
+ENDSSH
 
 # Run cleanup after deployment
 echo "🧹 Running post-deployment cleanup..."

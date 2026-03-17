@@ -3,7 +3,7 @@ from django.contrib.auth.decorators import login_required
 from django.contrib import messages
 from django.views.decorators.http import require_http_methods
 from django.utils import timezone
-from .models import TwitterProfile
+from .models import TwitterProfile, BookmarkSyncSchedule, BookmarkSyncJob
 from .forms import TwitterConnectionForm
 from .services import TwitterScraper, TwikitScraper
 from bookmarks_app.services import BookmarkService
@@ -368,3 +368,46 @@ def sync_bookmarks(request):
     # Show status only - no manual triggers (content is processed automatically)
     return render(request, 'twitter/sync.html', {'profile': profile})
 
+
+
+@login_required
+def bookmark_sync_status(request):
+    """Display bookmark sync status for current user."""
+    profiles = request.user.twitter_profiles.all()
+
+    status_data = []
+    for profile in profiles:
+        try:
+            schedule = profile.sync_schedule
+            recent_jobs = profile.sync_jobs.all()[:10]
+
+            # Check for alert condition (3+ failures)
+            show_alert = schedule.consecutive_failures >= 3
+
+            status_data.append({
+                'profile': profile,
+                'schedule': schedule,
+                'recent_jobs': recent_jobs,
+                'show_alert': show_alert,
+                'success_rate': _calculate_success_rate(profile),
+            })
+        except BookmarkSyncSchedule.DoesNotExist:
+            status_data.append({
+                'profile': profile,
+                'schedule': None,
+                'recent_jobs': [],
+                'show_alert': False,
+            })
+
+    return render(request, 'twitter/bookmark_sync_status.html', {
+        'status_data': status_data
+    })
+
+
+def _calculate_success_rate(profile):
+    """Calculate success rate over last 20 jobs."""
+    recent = profile.sync_jobs.all()[:20]
+    if not recent:
+        return 0
+    success = sum(1 for j in recent if j.status == 'success')
+    return int((success / len(recent)) * 100)

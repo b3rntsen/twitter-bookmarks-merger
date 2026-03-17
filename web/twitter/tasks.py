@@ -2,15 +2,183 @@
 import subprocess
 import sys
 import re
+import json
+import os
 import logging
 from pathlib import Path
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone as dt_timezone
 from django.utils import timezone
 from django_q.tasks import schedule as q_schedule
 from django_q.models import Schedule as DjangoQSchedule
-from .models import TwitterProfile, BookmarkSyncJob, BookmarkSyncSchedule
+from .models import TwitterProfile, BookmarkSyncJob, BookmarkSyncSchedule, Tweet, TweetMedia
+
+# Shared markdown parsing (from tools/)
+sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'tools'))
+from markdown_parser import parse_frontmatter, extract_tweet_text, extract_media_filenames, classify_media_type
 
 logger = logging.getLogger(__name__)
+
+
+def import_tweet_media(tweet: Tweet, markdown_body: str, cache_dir: Path) -> int:
+    """Extract media from birdmarks markdown and create TweetMedia records.
+
+    Args:
+        tweet: Saved Tweet instance
+        markdown_body: Markdown with ![](assets/file.jpg) references
+        cache_dir: birdmarks_cache directory with assets/ folder
+
+    Returns:
+        Count of media files imported
+    """
+    import shutil
+    from django.conf import settings
+
+    filenames = extract_media_filenames(markdown_body)
+    if not filenames:
+        return 0
+
+    # Create Django media directory
+    tweet_media_dir = Path(settings.MEDIA_ROOT) / 'tweets' / str(tweet.tweet_id)
+    tweet_media_dir.mkdir(parents=True, exist_ok=True)
+
+    media_count = 0
+    for filename in filenames:
+        source = cache_dir / 'assets' / filename
+        if not source.exists():
+            logger.warning(f"Media not found: {source}")
+            continue
+
+        # classify_media_type returns 'photo'/'video'; Django uses 'image'/'video'
+        raw_type = classify_media_type(filename)
+        media_type = 'image' if raw_type == 'photo' else raw_type
+
+        # Copy to Django media
+        dest = tweet_media_dir / filename
+        try:
+            shutil.copy2(source, dest)
+            file_size = dest.stat().st_size
+
+            # Generate video thumbnail
+            thumbnail_rel = ''
+            if media_type == 'video':
+                thumbnail_rel = generate_video_thumbnail(dest, tweet_media_dir, tweet.tweet_id)
+
+            # Create TweetMedia record
+            TweetMedia.objects.create(
+                tweet=tweet,
+                media_type=media_type,
+                file_path=f"tweets/{tweet.tweet_id}/{filename}",
+                original_url=f"birdmarks://assets/{filename}",
+                thumbnail_path=thumbnail_rel or '',
+                file_size=file_size
+            )
+            media_count += 1
+            logger.debug(f"  Imported media: {filename} ({file_size} bytes)")
+
+        except Exception as e:
+            logger.error(f"Failed to copy media {filename}: {e}")
+            continue
+
+    return media_count
+
+
+def generate_video_thumbnail(video_path: Path, output_dir: Path, tweet_id: str) -> str:
+    """Generate thumbnail with ffmpeg.
+
+    Args:
+        video_path: Path to video file
+        output_dir: Directory to save thumbnail
+        tweet_id: Tweet ID for path construction
+
+    Returns:
+        Relative path from MEDIA_ROOT to thumbnail, or empty string if failed
+    """
+    thumb_name = f"thumb_{video_path.stem}.jpg"
+    thumb_path = output_dir / thumb_name
+
+    try:
+        subprocess.run([
+            'ffmpeg', '-i', str(video_path), '-ss', '00:00:01',
+            '-vframes', '1', '-q:v', '2', str(thumb_path),
+            '-y', '-loglevel', 'error'
+        ], capture_output=True, check=True, timeout=10)
+
+        if thumb_path.exists():
+            return f"tweets/{tweet_id}/{thumb_name}"
+    except Exception as e:
+        logger.warning(f"Thumbnail generation failed for {video_path.name}: {e}")
+
+    return ''
+
+
+def import_markdown_bookmarks(output_dir: Path, profile: TwitterProfile) -> int:
+    """Import birdmarks markdown files into Django database."""
+    imported_count = 0
+    md_files = list(output_dir.glob("*.md"))
+
+    logger.info(f"Found {len(md_files)} markdown files to import")
+
+    for md_file in md_files:
+        try:
+            content = md_file.read_text(encoding='utf-8')
+            frontmatter, body = parse_frontmatter(content)
+
+            tweet_id = frontmatter.get('id')
+            if not tweet_id:
+                continue
+
+            # Skip if already exists
+            if Tweet.objects.filter(tweet_id=tweet_id).exists():
+                logger.debug(f"Skipping duplicate tweet {tweet_id}")
+                continue
+
+            # Parse date
+            date_str = frontmatter.get('date', '')
+            try:
+                if date_str:
+                    created_at = datetime.fromisoformat(str(date_str))
+                    if created_at.tzinfo is None:
+                        created_at = created_at.replace(tzinfo=dt_timezone.utc)
+                else:
+                    created_at = timezone.now()
+            except (ValueError, TypeError):
+                created_at = timezone.now()
+
+            # Extract text
+            text_content = extract_tweet_text(body)
+
+            # Create Tweet
+            tweet = Tweet.objects.create(
+                twitter_profile=profile,
+                tweet_id=tweet_id,
+                author_username=frontmatter.get('author', ''),
+                author_display_name=frontmatter.get('author_name', ''),
+                author_id='',
+                text_content=text_content,
+                html_content='',
+                html_content_sanitized='',
+                created_at=created_at,
+                like_count=0,
+                retweet_count=0,
+                reply_count=frontmatter.get('reply_count', 0),
+                is_bookmark=True,
+                is_reply=False,
+                processing_date=timezone.now().date()
+            )
+
+            # Import media from markdown
+            media_count = import_tweet_media(tweet, body, output_dir.parent)
+            if media_count > 0:
+                logger.info(f"  Imported {media_count} media file(s) for tweet {tweet_id}")
+
+            imported_count += 1
+            logger.info(f"Imported tweet {tweet_id} by @{tweet.author_username}")
+
+        except Exception as e:
+            logger.error(f"Failed to import {md_file.name}: {e}")
+            continue
+
+    return imported_count
 
 
 def execute_bookmark_sync(sync_job_id: int):
@@ -23,17 +191,52 @@ def execute_bookmark_sync(sync_job_id: int):
         profile = job.twitter_profile
         schedule = profile.sync_schedule
 
-        # Build command to run birdmarks_bridge.py
-        bridge_script = Path(__file__).parent.parent.parent / "tools" / "birdmarks_bridge.py"
+        # Guard: Prevent premature execution (fix for runaway scheduling bug)
+        now = timezone.now()
+        if job.scheduled_at > now:
+            time_until = (job.scheduled_at - now).total_seconds()
+            logger.warning(
+                f"Job #{job.id} executed too early! Scheduled for {job.scheduled_at}, "
+                f"but it's only {now} ({time_until:.0f}s too early). "
+                f"This indicates a Django-Q scheduling issue. Job will be skipped."
+            )
+            # Don't reschedule - the Django-Q schedule should handle it
+            return
 
-        cmd = [
-            sys.executable,
-            str(bridge_script),
-            "--max-pages", str(schedule.max_pages)
-        ]
+        # Call birdmarks binary directly (bypass bridge script to avoid subprocess nesting)
+        birdmarks_bin = Path(__file__).parent.parent.parent / "birdmarks" / "birdmarks"
+        output_dir = Path("/tmp") / f"birdmarks_output_{profile.id}"
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        # Get cookies from database
+        credentials = profile.get_credentials()
+        if not credentials or 'cookies' not in credentials:
+            raise Exception("No cookies found in profile credentials")
+
+        cookies = credentials['cookies']
+
+        # Convert list format to dict format if needed
+        if isinstance(cookies, list):
+            cookie_dict = {c['name']: c['value'] for c in cookies if 'name' in c and 'value' in c}
+        else:
+            cookie_dict = cookies
+
+        # Verify essential cookies exist
+        if 'auth_token' not in cookie_dict or 'ct0' not in cookie_dict:
+            raise Exception("Missing auth_token or ct0 in cookies")
+
+        # Build command WITHOUT credentials in args
+        cmd = [str(birdmarks_bin), str(output_dir)]
 
         if schedule.use_until_synced:
-            cmd.append("--until-synced")
+            cmd.append("--rebuild")
+        else:
+            cmd.extend(["--max-pages", str(schedule.max_pages)])
+
+        # Pass cookies as environment variables (birdmarks reads AUTH_TOKEN and CT0 from env)
+        env = os.environ.copy()
+        env['AUTH_TOKEN'] = cookie_dict['auth_token']
+        env['CT0'] = cookie_dict['ct0']
 
         # Mark as running just before execution (fix race condition)
         job.status = 'running'
@@ -41,23 +244,38 @@ def execute_bookmark_sync(sync_job_id: int):
         job.save()
 
         logger.info(f"Starting bookmark sync for {profile.twitter_username} (job #{job.id})")
+        logger.info(f"Command: {' '.join(cmd)}")
+        logger.info(f"ENV: AUTH_TOKEN={len(env.get('AUTH_TOKEN', ''))} chars, CT0={len(env.get('CT0', ''))} chars")
 
         # Execute with timeout
+        logger.info("Executing birdmarks binary...")
         result = subprocess.run(
             cmd,
+            env=env,
             capture_output=True,
             text=True,
             timeout=600  # 10-minute timeout
         )
 
-        # Parse output for success indicators
         stdout = result.stdout
         stderr = result.stderr
+        logger.info(f"Binary returned: exit_code={result.returncode}, stdout_len={len(stdout)}, stderr_len={len(stderr)}")
 
-        # Extract bookmarks count from output
-        # Look for patterns like "Exported: 42 bookmarks" or "✅ Converted 42 NEW bookmarks"
-        match = re.search(r'(?:Exported:|Converted)\s+(\d+)', stdout)
-        bookmarks_count = int(match.group(1)) if match else 0
+        # Import bookmarks from markdown files, then clean up
+        try:
+            md_files = list(output_dir.glob("*.md")) if output_dir.exists() else []
+            logger.info(f"Found {len(md_files)} .md files in {output_dir}")
+
+            bookmarks_count = import_markdown_bookmarks(output_dir, profile)
+            logger.info(f"Successfully imported {bookmarks_count} bookmarks into database")
+        except Exception as import_error:
+            logger.error(f"Failed to import bookmarks: {import_error}")
+            bookmarks_count = 0
+        finally:
+            # Clean up temp output directory
+            if output_dir.exists():
+                import shutil
+                shutil.rmtree(output_dir, ignore_errors=True)
 
         # Check for success
         if result.returncode == 0:
@@ -201,34 +419,34 @@ def schedule_next_bookmark_sync(twitter_profile_id: int):
             status='pending'
         )
 
+        # Delete any existing pending Django-Q schedules for this profile to avoid duplicates
+        stale = DjangoQSchedule.objects.filter(
+            func='twitter.tasks.execute_bookmark_sync',
+            name__startswith=f"bookmark_sync_{profile.id}_"
+        )
+        stale_count = stale.count()
+        if stale_count:
+            logger.info(f"Cleaning up {stale_count} stale Django-Q schedule(s) for {profile.twitter_username}")
+            stale.delete()
+
         # Update schedule
         schedule.next_sync_at = next_sync
         schedule.last_scheduled_at = timezone.now()
         schedule.save()
 
-        # Delete any existing Django-Q schedules for this profile to avoid duplicates
-        existing = DjangoQSchedule.objects.filter(
-            func='twitter.tasks.execute_bookmark_sync',
-            args=str([job.id])
-        ).first()
-        if existing:
-            logger.warning(f"Deleting existing Django-Q schedule {existing.id} for {profile.twitter_username}")
-            existing.delete()
-
-        # Create new schedule with unique name
-        schedule_name = f"bookmark_sync_{profile.id}_{int(next_sync.timestamp())}"
-
-        # Queue task with Django-Q
-        q_schedule(
+        # Queue task for future execution using schedule() with one-time execution
+        from django_q.tasks import schedule
+        schedule_name = f"bookmark_sync_{profile.id}_{job.id}"
+        schedule_id = schedule(
             'twitter.tasks.execute_bookmark_sync',
             job.id,
             name=schedule_name,
-            schedule_type='O',  # 'O' = Once
             next_run=next_sync,
-            repeats=1
+            schedule_type='O',  # Once
+            repeats=1  # Run once and delete
         )
 
-        logger.info(f"Scheduled bookmark sync for {profile.twitter_username} at {next_sync} (job #{job.id})")
+        logger.info(f"Scheduled bookmark sync for {profile.twitter_username} at {next_sync} (job #{job.id}, schedule={schedule_name})")
 
     except BookmarkSyncSchedule.DoesNotExist:
         # No schedule configured, skip

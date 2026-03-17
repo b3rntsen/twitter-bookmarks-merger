@@ -7,14 +7,19 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
 from datetime import datetime
 from pathlib import Path
 
+# Import shared markdown parsing (same directory)
+sys.path.insert(0, str(Path(__file__).parent))
+from markdown_parser import parse_frontmatter, extract_tweet_text, extract_media_filenames, classify_media_type
+
 SECRETS_FILE = Path.home() / ".openclaw" / "secrets" / "twitter-cookies.json"
-BIRDMARKS_DIR = Path(__file__).parent.parent.parent / "birdmarks"  # Sibling folder
+BIRDMARKS_DIR = Path(__file__).parent.parent / "birdmarks"  # Project root / birdmarks
 BIRDMARKS_BIN = BIRDMARKS_DIR / "birdmarks"  # Precompiled binary
 OUTPUT_DIR = Path(__file__).parent.parent / "raw" / "json"
 BIRDMARKS_CACHE = Path(__file__).parent.parent / "birdmarks_cache"  # Persistent cache for state
@@ -109,85 +114,6 @@ def load_cookies():
     return cookies
 
 
-def parse_frontmatter(content: str) -> tuple:
-    if not content.startswith("---"):
-        return {}, content
-    
-    end_idx = content.find("\n---", 3)
-    if end_idx == -1:
-        return {}, content
-    
-    frontmatter_str = content[4:end_idx]
-    body = content[end_idx + 4:].strip()
-    
-    frontmatter = {}
-    current_key = None
-    current_array = None
-    
-    for line in frontmatter_str.split("\n"):
-        if line.startswith("  - ") and current_key and current_array is not None:
-            current_array.append(line[4:].strip())
-            continue
-        
-        match = re.match(r'^(\w+):\s*(.*)$', line)
-        if match:
-            if current_key and current_array is not None:
-                frontmatter[current_key] = current_array
-            
-            current_key = match.group(1)
-            value = match.group(2).strip()
-            
-            if value == "":
-                current_array = []
-            else:
-                current_array = None
-                if (value.startswith('"') and value.endswith('"')) or \
-                   (value.startswith("'") and value.endswith("'")):
-                    frontmatter[current_key] = value[1:-1]
-                elif value.isdigit():
-                    frontmatter[current_key] = int(value)
-                else:
-                    frontmatter[current_key] = value
-    
-    if current_key and current_array is not None:
-        frontmatter[current_key] = current_array
-    
-    return frontmatter, body
-
-
-def extract_tweet_text(body: str) -> str:
-    """Extract the actual tweet text from markdown body."""
-    lines = body.split('\n')
-    text_lines = []
-    skip_header = True
-    
-    for line in lines:
-        # Skip the header section (# Thread, author line, date, View on Twitter link)
-        if skip_header:
-            if line.startswith('# ') or line.startswith('**@') or re.match(r'^\d{4}-\d{2}-\d{2}$', line.strip()):
-                continue
-            if '[View on Twitter]' in line or line.strip() == '':
-                continue
-            skip_header = False
-        
-        # Stop at thread/reply separators
-        if line.strip() == '---' or line.startswith('## '):
-            break
-        
-        # Skip image embeds
-        if line.startswith('!['):
-            continue
-        
-        text_lines.append(line)
-    
-    text = '\n'.join(text_lines).strip()
-    # Clean up markdown links [text](url) -> text
-    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
-    # Clean up bold/italic
-    text = re.sub(r'\*+([^*]+)\*+', r'\1', text)
-    return text
-
-
 def convert_bookmark(md_file: Path) -> dict:
     try:
         content = md_file.read_text(encoding='utf-8')
@@ -201,7 +127,7 @@ def convert_bookmark(md_file: Path) -> dict:
         return None
     
     full_text = extract_tweet_text(body)
-    
+
     date_str = frontmatter.get("date", "")
     try:
         from datetime import timezone
@@ -215,9 +141,31 @@ def convert_bookmark(md_file: Path) -> dict:
         created_at = dt.strftime("%a %b %d %H:%M:%S +0000 %Y")
     except:
         created_at = str(date_str)
-    
+
+    # Extract and copy media files
+    tweet_id = str(frontmatter.get("id", ""))
+    cache_dir = BIRDMARKS_CACHE
+    media_filenames = extract_media_filenames(body)
+    media_types = [classify_media_type(f) for f in media_filenames]
+
+    # Copy media to master/media/{tweet_id}/
+    media_urls = []
+    if media_filenames and tweet_id:
+        master_media_dir = Path(__file__).parent.parent / "master" / "media" / tweet_id
+        master_media_dir.mkdir(parents=True, exist_ok=True)
+
+        for filename in media_filenames:
+            src_path = cache_dir / "assets" / filename
+            if src_path.exists():
+                dest_path = master_media_dir / src_path.name
+                try:
+                    shutil.copy2(src_path, dest_path)
+                    media_urls.append(f"local:{src_path.name}")
+                except Exception as e:
+                    print(f"   ⚠ Failed to copy {src_path.name}: {e}")
+
     return {
-        "Tweet Id": str(frontmatter.get("id", "")),
+        "Tweet Id": tweet_id,
         "Full Text": full_text,
         "Created At": created_at,
         "Scraped At": datetime.now().isoformat(),
@@ -232,17 +180,19 @@ def convert_bookmark(md_file: Path) -> dict:
         "Retweet Count": "",
         "Reply Count": str(frontmatter.get("reply_count", "")),
         "Favorite Count": "",
-        "Media URLs": "",
-        "Media Types": "",
+        "Media URLs": ", ".join(media_urls) if media_urls else "",
+        "Media Types": ", ".join(media_types) if media_types else "",
     }
 
 
-def run_birdmarks(output_dir: Path, max_pages: int, dry_run: bool, until_synced: bool = False) -> bool:
+def run_birdmarks(output_dir: Path, max_pages: int, dry_run: bool, until_synced: bool = False, backfill_replies: bool = False) -> bool:
     """Run birdmarks binary with optional rebuild mode for gap-free sync."""
     cookies = load_cookies()
 
     if dry_run:
         mode = "rebuild (until synced)" if until_synced else f"{max_pages} pages"
+        if backfill_replies:
+            mode += " + backfill replies"
         print(f"🔍 DRY RUN - Would fetch ({mode})")
         print(f"   Auth token: {cookies['auth_token'][:10]}...")
         return True
@@ -258,7 +208,11 @@ def run_birdmarks(output_dir: Path, max_pages: int, dry_run: bool, until_synced:
     # Use rebuild mode for until-synced (iterates from beginning, smart stops)
     if until_synced:
         cmd.append("--rebuild")
-        print(f"📥 Fetching bookmarks (rebuild mode - will stop at existing)...")
+        if backfill_replies:
+            cmd.append("--backfill-replies")
+            print(f"📥 Backfilling threads (rebuild mode - will add missing replies)...")
+        else:
+            print(f"📥 Fetching bookmarks (rebuild mode - will stop at existing)...")
     else:
         cmd.extend(["--max-pages", str(max_pages)])
         print(f"📥 Fetching bookmarks (max {max_pages} pages, ~{max_pages * 40} bookmarks)...")
@@ -407,6 +361,8 @@ def main():
     parser.add_argument("--stop-before", type=str, help="Stop at bookmarks created before this date (YYYY-MM-DD)")
     parser.add_argument("--until-synced", action="store_true",
                        help="Keep fetching until reaching last synced bookmark (may take multiple runs)")
+    parser.add_argument("--backfill-replies", action="store_true",
+                       help="Backfill missing threads/replies for existing bookmarks (use with --until-synced)")
     args = parser.parse_args()
 
     print("🐦 Birdmarks Bridge")
@@ -450,7 +406,7 @@ def main():
     birdmarks_output = BIRDMARKS_CACHE
     birdmarks_output.mkdir(parents=True, exist_ok=True)
 
-    if not run_birdmarks(birdmarks_output, args.max_pages, args.dry_run, args.until_synced):
+    if not run_birdmarks(birdmarks_output, args.max_pages, args.dry_run, args.until_synced, args.backfill_replies):
         sys.exit(1)
 
     if args.dry_run:

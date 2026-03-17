@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+{% load static %}
+
+{% block title %}Bookmark Sync Status - Twitter Bookmarks{% endblock %}
+
+{% block content %}
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+<div class="container mt-4">
+    <h2>Bookmark Sync Status</h2>
+
+    {% if not status_data %}
+    <div class="alert alert-info">
+        No Twitter profiles connected. <a href="{% url 'twitter:connect' %}">Connect Twitter Account</a>
+    </div>
+    {% endif %}
+
+    {% for data in status_data %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h4>@{{ data.profile.twitter_username }}</h4>
+        </div>
+        <div class="card-body">
+            {% if data.show_alert %}
+            <div class="alert alert-danger" role="alert">
+                <strong>⚠️ Sync Failing!</strong>
+                {{ data.schedule.consecutive_failures }} consecutive failures detected.
+                This usually means your Twitter cookies have expired.
+                <br><a href="{% url 'twitter:connect' %}" class="alert-link">Reconnect Twitter Account</a>
+            </div>
+            {% endif %}
+
+            {% if data.schedule %}
+            <dl class="row">
+                <dt class="col-sm-3">Status</dt>
+                <dd class="col-sm-9">
+                    {% if data.profile.sync_status == 'success' %}
+                    <span class="badge bg-success">✓ Active</span>
+                    {% else %}
+                    <span class="badge bg-danger">✗ Error</span>
+                    {% endif %}
+                </dd>
+
+                <dt class="col-sm-3">Last Sync</dt>
+                <dd class="col-sm-9">
+                    {% if data.profile.last_sync_at %}
+                    {{ data.profile.last_sync_at|timesince }} ago
+                    {% else %}
+                    Never
+                    {% endif %}
+                </dd>
+
+                <dt class="col-sm-3">Next Sync</dt>
+                <dd class="col-sm-9">
+                    {% if data.schedule.next_sync_at %}
+                    in {{ data.schedule.next_sync_at|timeuntil }}
+                    {% else %}
+                    Not scheduled
+                    {% endif %}
+                </dd>
+
+                <dt class="col-sm-3">Success Rate</dt>
+                <dd class="col-sm-9">
+                    {{ data.success_rate }}% (last 20 syncs)
+                </dd>
+
+                <dt class="col-sm-3">Schedule</dt>
+                <dd class="col-sm-9">
+                    Every {{ data.schedule.interval_minutes }} minutes
+                    ({{ data.schedule.start_hour }}:00 - {{ data.schedule.end_hour }}:00)
+                </dd>
+            </dl>
+
+            <h5>Recent Sync Jobs</h5>
+            <table class="table table-sm">
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>Status</th>
+                        <th>Bookmarks</th>
+                        <th>Error</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for job in data.recent_jobs %}
+                    <tr>
+                        <td>{{ job.scheduled_at|date:"Y-m-d H:i" }}</td>
+                        <td>
+                            {% if job.status == 'success' %}
+                            <span class="badge bg-success">Success</span>
+                            {% elif job.status == 'failed' %}
+                            <span class="badge bg-danger">Failed</span>
+                            {% elif job.status == 'running' %}
+                            <span class="badge bg-info">Running</span>
+                            {% else %}
+                            <span class="badge bg-secondary">Pending</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ job.bookmarks_fetched }}</td>
+                        <td>{{ job.error_type|default:"-" }}</td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="4" class="text-center">No sync jobs yet</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+            {% else %}
+            <p>No sync schedule configured.</p>
+            <a href="/new-gen/admin/twitter/bookmarksyncschedule/add/" class="btn btn-primary">
+                Configure Sync Schedule
+            </a>
+            {% endif %}
+        </div>
+    </div>
+    {% endfor %}
+
+    <div class="mt-4">
+        <a href="/new-gen/admin/twitter/bookmarksyncschedule/" class="btn btn-secondary">Manage Schedules</a>
+        <a href="/new-gen/admin/twitter/bookmarksyncjob/" class="btn btn-secondary">View All Jobs</a>
+    </div>
+</div>
+{% endblock %}

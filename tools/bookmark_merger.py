@@ -4518,9 +4518,9 @@ def add_newgen_link(html: str) -> str:
 
 
 def add_admin_link(html: str) -> str:
-    """Add 'Admin' link to navbar for admins only (with JS to show conditionally)"""
-    # Add hidden admin link after New-Gen link
-    admin_link = '<a href="/accounts/admin/" id="admin-link" style="display:none;">Admin</a>'
+    """Add 'Django Admin' link to navbar for admins only (with JS to show conditionally)"""
+    # Add hidden admin link after Authors link
+    admin_link = '<a href="/new-gen/admin/" id="admin-link" style="display:none;">Django Admin</a>'
     admin_js = '''
 <script>
 // Check if user is admin and show admin link
@@ -4535,11 +4535,22 @@ fetch('/accounts/user-info/')
     .catch(() => {});
 </script>
 '''
-    # Add admin link after New-Gen link
-    html = html.replace(
-        '<a href="/new-gen/">New-Gen</a>',
-        f'<a href="/new-gen/">New-Gen</a>\n        {admin_link}'
-    )
+    # Add admin link after Authors link (multiple path patterns)
+    if '<a href="/authors/index.html">Authors</a>' in html:
+        html = html.replace(
+            '<a href="/authors/index.html">Authors</a>',
+            f'<a href="/authors/index.html">Authors</a>\n        {admin_link}'
+        )
+    elif '<a href="../authors/index.html">Authors</a>' in html:
+        html = html.replace(
+            '<a href="../authors/index.html">Authors</a>',
+            f'<a href="../authors/index.html">Authors</a>\n        {admin_link}'
+        )
+    elif '<a href="index.html">Authors</a>' in html:
+        html = html.replace(
+            '<a href="index.html">Authors</a>',
+            f'<a href="index.html">Authors</a>\n        {admin_link}'
+        )
     # Add the JavaScript before closing body tag
     html = html.replace('</body>', f'{admin_js}</body>')
     return html
@@ -4928,7 +4939,6 @@ function escapeHtml(text) {{
 """
     page = HTML_BASE.format(title="Twitter Bookmarks", content=index_content)
     page = fix_paths_for_server(page)
-    page = add_newgen_link(page)
     page = add_admin_link(page)
     page = page.replace('href="/index.html"', 'href="/"')
     with open(html_dir / "index.html", "w", encoding="utf-8") as f:
@@ -5024,7 +5034,6 @@ document.querySelectorAll('.year-link').forEach(link => {{
     cat_index_content += timeline_js
     page = HTML_BASE.format(title="Categories", content=cat_index_content)
     page = fix_paths_for_server(page)
-    page = add_newgen_link(page)
     page = add_admin_link(page)
     with open(html_dir / "categories" / "index.html", "w", encoding="utf-8") as f:
         f.write(page)
@@ -5099,7 +5108,6 @@ function applyFilters() {{
 '''
         page = HTML_BASE.format(title=cat_info.get("name", cat_id), content=content)
         page = fix_paths_for_server(page)
-        page = add_newgen_link(page)
         page = add_admin_link(page)
         with open(html_dir / "categories" / f"{cat_id}.html", "w", encoding="utf-8") as f:
             f.write(page)
@@ -5121,7 +5129,6 @@ function applyFilters() {{
                     content = f.read()
 
                 content = fix_paths_for_server(content)
-                content = add_newgen_link(content)
                 content = add_admin_link(content)
                 # Fix media paths to absolute server paths
                 content = content.replace('../../../media/', '/media/bookmarks/')
@@ -5145,7 +5152,6 @@ function applyFilters() {{
                 content = f.read()
 
             content = fix_paths_for_server(content)
-            content = add_newgen_link(content)
             content = add_admin_link(content)
             # Fix media paths
             content = content.replace('../../media/', '/media/bookmarks/')
@@ -5171,7 +5177,6 @@ function applyFilters() {{
                 content = f.read()
 
             content = fix_paths_for_server(content)
-            content = add_newgen_link(content)
             content = add_admin_link(content)
             # Fix media paths
             content = content.replace('../../media/', '/media/bookmarks/')
@@ -5698,6 +5703,7 @@ def main():
     fetch_parser = subparsers.add_parser("fetch", help="Fetch new bookmarks via birdmarks API")
     fetch_parser.add_argument("--max-pages", type=int, default=2, help="Max pages to fetch (default: 2, ~80 bookmarks)")
     fetch_parser.add_argument("--until-synced", action="store_true", help="Keep fetching until reaching last synced bookmark")
+    fetch_parser.add_argument("--backfill-replies", action="store_true", help="Backfill missing threads/replies for existing bookmarks")
     fetch_parser.add_argument("--dry-run", action="store_true", help="Show what would happen without fetching")
 
     # Clean cache command
