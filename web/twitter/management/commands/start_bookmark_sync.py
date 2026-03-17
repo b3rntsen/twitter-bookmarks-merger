@@ -1,4 +1,5 @@
 from django.core.management.base import BaseCommand
+from django.utils import timezone
 from twitter.models import TwitterProfile, BookmarkSyncSchedule
 from twitter.tasks import schedule_next_bookmark_sync
 
@@ -75,8 +76,8 @@ class Command(BaseCommand):
                             f'expired cookies — re-enable manually after updating cookies'
                         )
                     )
-            elif schedule.enabled and not schedule.next_sync_at:
-                # Enabled but no next sync scheduled (e.g. after container restart)
+            elif schedule.enabled and (not schedule.next_sync_at or schedule.next_sync_at < timezone.now()):
+                # Enabled but no next sync or stale next_sync_at (e.g. after container restart)
                 schedule_next_bookmark_sync(profile.id)
                 self.stdout.write(
                     self.style.SUCCESS(
