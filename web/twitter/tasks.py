@@ -167,7 +167,7 @@ def import_markdown_bookmarks(output_dir: Path, profile: TwitterProfile) -> int:
             )
 
             # Import media from markdown
-            media_count = import_tweet_media(tweet, body, output_dir.parent)
+            media_count = import_tweet_media(tweet, body, output_dir)
             if media_count > 0:
                 logger.info(f"  Imported {media_count} media file(s) for tweet {tweet_id}")
 
