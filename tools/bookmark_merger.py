@@ -4939,6 +4939,7 @@ function escapeHtml(text) {{
 """
     page = HTML_BASE.format(title="Twitter Bookmarks", content=index_content)
     page = fix_paths_for_server(page)
+    page = add_newgen_link(page)
     page = add_admin_link(page)
     page = page.replace('href="/index.html"', 'href="/"')
     with open(html_dir / "index.html", "w", encoding="utf-8") as f:
@@ -5034,6 +5035,7 @@ document.querySelectorAll('.year-link').forEach(link => {{
     cat_index_content += timeline_js
     page = HTML_BASE.format(title="Categories", content=cat_index_content)
     page = fix_paths_for_server(page)
+    page = add_newgen_link(page)
     page = add_admin_link(page)
     with open(html_dir / "categories" / "index.html", "w", encoding="utf-8") as f:
         f.write(page)
@@ -5108,6 +5110,7 @@ function applyFilters() {{
 '''
         page = HTML_BASE.format(title=cat_info.get("name", cat_id), content=content)
         page = fix_paths_for_server(page)
+        page = add_newgen_link(page)
         page = add_admin_link(page)
         with open(html_dir / "categories" / f"{cat_id}.html", "w", encoding="utf-8") as f:
             f.write(page)
@@ -5129,6 +5132,7 @@ function applyFilters() {{
                     content = f.read()
 
                 content = fix_paths_for_server(content)
+                content = add_newgen_link(content)
                 content = add_admin_link(content)
                 # Fix media paths to absolute server paths
                 content = content.replace('../../../media/', '/media/bookmarks/')
@@ -5152,6 +5156,7 @@ function applyFilters() {{
                 content = f.read()
 
             content = fix_paths_for_server(content)
+            content = add_newgen_link(content)
             content = add_admin_link(content)
             # Fix media paths
             content = content.replace('../../media/', '/media/bookmarks/')
@@ -5177,6 +5182,7 @@ function applyFilters() {{
                 content = f.read()
 
             content = fix_paths_for_server(content)
+            content = add_newgen_link(content)
             content = add_admin_link(content)
             # Fix media paths
             content = content.replace('../../media/', '/media/bookmarks/')
