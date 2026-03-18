@@ -71,6 +71,9 @@ services:
       - media:/app/media
       - db_data:/app/db
       - ./birdmarks:/app/birdmarks:ro
+      - ./master:/app/master
+      - ./server:/app/server
+      - ./bookmarks-html:/app/bookmarks-html
     env_file:
       - .env
     environment:
