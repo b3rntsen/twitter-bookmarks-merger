@@ -18,6 +18,12 @@ from markdown_parser import parse_frontmatter, extract_tweet_text, extract_media
 
 logger = logging.getLogger(__name__)
 
+# Path to master data on server (rsynced from local)
+MASTER_DIR = Path(__file__).parent.parent.parent / 'master'
+TOOLS_DIR = Path(__file__).parent.parent.parent / 'tools'
+SERVER_HTML_DIR = Path(__file__).parent.parent.parent / 'server' / 'html'
+BOOKMARKS_HTML_DIR = Path(__file__).parent.parent.parent / 'bookmarks-html'
+
 
 def import_tweet_media(tweet: Tweet, markdown_body: str, cache_dir: Path) -> int:
     """Extract media from birdmarks markdown and create TweetMedia records.
@@ -181,6 +187,113 @@ def import_markdown_bookmarks(output_dir: Path, profile: TwitterProfile) -> int:
     return imported_count
 
 
+def export_django_tweets_to_bookmarks_json():
+    """Export all Django tweets to master/bookmarks.json format, merging with existing data."""
+    bookmarks_file = MASTER_DIR / 'bookmarks.json'
+
+    # Load existing bookmarks (preserves categories, media URLs, etc.)
+    existing = {}
+    if bookmarks_file.exists():
+        try:
+            with open(bookmarks_file) as f:
+                for b in json.load(f):
+                    existing[b['Tweet Id']] = b
+        except Exception as e:
+            logger.error(f"Failed to load existing bookmarks.json: {e}")
+
+    # Export Django tweets and merge (new tweets override, existing keep extra fields)
+    tweets = Tweet.objects.all().order_by('-created_at')
+    new_count = 0
+    for tweet in tweets:
+        tid = tweet.tweet_id
+        if tid in existing:
+            # Update text but keep categories/media from existing
+            existing[tid]['Full Text'] = tweet.text_content
+            existing[tid]['Scraped At'] = tweet.scraped_at.isoformat() if tweet.scraped_at else ''
+        else:
+            # New tweet - create bookmark entry
+            created_str = tweet.created_at.strftime('%a %b %d %H:%M:%S %z %Y') if tweet.created_at else ''
+            existing[tid] = {
+                'Tweet Id': tid,
+                'Full Text': tweet.text_content,
+                'Created At': created_str,
+                'Scraped At': tweet.scraped_at.isoformat() if tweet.scraped_at else '',
+                'Tweet URL': f'https://twitter.com/{tweet.author_username}/status/{tid}',
+                'User Screen Name': tweet.author_username,
+                'User Name': tweet.author_display_name or tweet.author_username,
+                'User Avatar Url': tweet.author_profile_image_url or '',
+                'User Description': '',
+                'User Location': '',
+                'User Followers Count': '',
+                'User Is Blue Verified': '',
+                'Retweet Count': str(tweet.retweet_count) if tweet.retweet_count else '',
+                'Reply Count': str(tweet.reply_count) if tweet.reply_count else '',
+                'Favorite Count': str(tweet.like_count) if tweet.like_count else '',
+                'Media URLs': '',
+                'Media Types': '',
+            }
+            new_count += 1
+
+    # Sort by Created At (newest first) and save
+    all_bookmarks = sorted(existing.values(),
+                          key=lambda b: b.get('Scraped At', ''),
+                          reverse=True)
+
+    MASTER_DIR.mkdir(parents=True, exist_ok=True)
+    with open(bookmarks_file, 'w') as f:
+        json.dump(all_bookmarks, f, indent=2, ensure_ascii=False)
+
+    logger.info(f"Exported {len(all_bookmarks)} bookmarks to {bookmarks_file} ({new_count} new)")
+    return new_count
+
+
+def regenerate_static_site():
+    """Regenerate the static bookmarks HTML site after sync."""
+    try:
+        bookmarks_file = MASTER_DIR / 'bookmarks.json'
+        if not bookmarks_file.exists():
+            logger.warning("No bookmarks.json found, skipping static site regeneration")
+            return False
+
+        merger_script = TOOLS_DIR / 'bookmark_merger.py'
+        if not merger_script.exists():
+            logger.warning(f"bookmark_merger.py not found at {merger_script}")
+            return False
+
+        # Run publish-server to generate static HTML
+        logger.info("Regenerating static site with publish-server...")
+        result = subprocess.run(
+            [sys.executable, str(merger_script), 'publish-server'],
+            capture_output=True, text=True, timeout=300,
+            cwd=str(TOOLS_DIR.parent)  # Run from project root
+        )
+
+        if result.returncode != 0:
+            logger.error(f"publish-server failed: {result.stderr[:500]}")
+            return False
+
+        logger.info(f"Static site generated: {result.stdout[-200:]}")
+
+        # Copy server/html/ to bookmarks-html/ (server serves from bookmarks-html/)
+        if SERVER_HTML_DIR.exists() and BOOKMARKS_HTML_DIR.exists():
+            import shutil
+            # Sync HTML files (not media - that's separate)
+            for item in SERVER_HTML_DIR.iterdir():
+                dest = BOOKMARKS_HTML_DIR / item.name
+                if item.is_dir():
+                    if dest.exists():
+                        shutil.rmtree(dest)
+                    shutil.copytree(item, dest)
+                else:
+                    shutil.copy2(item, dest)
+            logger.info(f"Copied static site to {BOOKMARKS_HTML_DIR}")
+
+        return True
+    except Exception as e:
+        logger.error(f"Static site regeneration failed: {e}")
+        return False
+
+
 def execute_bookmark_sync(sync_job_id: int):
     """
     Execute bookmark sync via birdmarks_bridge.py.
@@ -294,6 +407,14 @@ def execute_bookmark_sync(sync_job_id: int):
             profile.sync_error_message = ''
 
             logger.info(f"Bookmark sync successful for {profile.twitter_username}: {bookmarks_count} bookmarks")
+
+            # Regenerate static site with new bookmarks
+            try:
+                new_exported = export_django_tweets_to_bookmarks_json()
+                if new_exported > 0 or bookmarks_count > 0:
+                    regenerate_static_site()
+            except Exception as regen_error:
+                logger.error(f"Static site regeneration failed: {regen_error}")
         else:
             # Parse error type
             error_type = 'unknown'

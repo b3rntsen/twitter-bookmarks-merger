@@ -4520,7 +4520,7 @@ def add_newgen_link(html: str) -> str:
 def add_admin_link(html: str) -> str:
     """Add 'Django Admin' link to navbar for admins only (with JS to show conditionally)"""
     # Add hidden admin link after Authors link
-    admin_link = '<a href="/new-gen/admin/" id="admin-link" style="display:none;">Django Admin</a>'
+    admin_link = '<a href="/admin/" id="admin-link" style="display:none;">Django Admin</a>'
     admin_js = '''
 <script>
 // Check if user is admin and show admin link
