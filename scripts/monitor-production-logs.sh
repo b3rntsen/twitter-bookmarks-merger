@@ -6,7 +6,7 @@ set -e
 
 SSH_KEY="${SSH_KEY:-$HOME/.ssh/twitter-bookmarks-key.pem}"
 SERVER_USER="${SERVER_USER:-ec2-user}"
-SERVER_HOST="${SERVER_HOST:-13.62.72.70}"
+SERVER_HOST="${SERVER_HOST:-13.49.172.180}"
 PROJECT_DIR_REMOTE="/home/${SERVER_USER}/twitter-bookmarks"
 
 FILTER="${1:-}"

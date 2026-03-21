@@ -6,7 +6,7 @@ set -e
 
 SSH_KEY="${SSH_KEY:-~/.ssh/twitter-bookmarks-key.pem}"
 SERVER_USER="${SERVER_USER:-ec2-user}"
-SERVER_HOST="${SERVER_HOST:-13.62.72.70}"
+SERVER_HOST="${SERVER_HOST:-13.49.172.180}"
 PROJECT_DIR="/home/${SERVER_USER}/twitter-bookmarks"
 
 echo "🚀 Starting deployment to production..."
@@ -44,6 +44,8 @@ rsync -avz --progress \
   --exclude='*.log' \
   --exclude='raw/' \
   --exclude='master/' \
+  --exclude='birdmarks_cache/' \
+  --exclude='terraform/' \
   -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
   "$(dirname "$(dirname "$0")")/" "${SERVER_USER}@${SERVER_HOST}:${PROJECT_DIR}/"
 

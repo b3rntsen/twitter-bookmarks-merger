@@ -97,24 +97,8 @@ resource "aws_eip" "web_eip" {
   }
 }
 
-# Route 53 Hosted Zone for vibe.dethele.com
-resource "aws_route53_zone" "vibe_dethele" {
-  name = "vibe.dethele.com"
-
-  tags = {
-    Name    = "${var.project_name}-route53-zone"
-    Project = var.project_name
-  }
-}
-
-# A record for twitter.vibe.dethele.com pointing to the Elastic IP
-resource "aws_route53_record" "twitter_vibe_dethele" {
-  zone_id = aws_route53_zone.vibe_dethele.zone_id
-  name    = "twitter.vibe.dethele.com"
-  type    = "A"
-  ttl     = 300
-  records = [aws_eip.web_eip.public_ip]
-}
+# DNS: twitter.dethele.com is managed on one.com, pointing to the Elastic IP.
+# No Route53 resources needed.
 
 # IAM Role for EC2 instance (for future use with ElastiCache, CloudWatch, etc.)
 resource "aws_iam_role" "ec2_role" {

@@ -13,7 +13,7 @@ upstream django {
 # HTTP server - serves both domains and handles Let's Encrypt challenge
 server {
     listen 80;
-    server_name twitter.vibe.dethele.com twitter.dethele.com;
+    server_name twitter.dethele.com;
 
     # Let's Encrypt challenge
     location /.well-known/acme-challenge/ {

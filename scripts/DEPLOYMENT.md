@@ -78,7 +78,7 @@ python manage.py test
 ./scripts/quick-deploy.sh
 
 # 4. Check logs
-ssh -i ~/.ssh/twitter-bookmarks-key.pem ec2-user@13.62.72.70 \
+ssh -i ~/.ssh/twitter-bookmarks-key.pem ec2-user@13.49.172.180 \
   'cd twitter-bookmarks && docker compose -f docker-compose.prod.yml logs -f qcluster'
 ```
 
@@ -128,7 +128,7 @@ Did you only change static bookmarks HTML?
 
 ### Deployment hangs
 - Check SSH key permissions: `chmod 400 ~/.ssh/twitter-bookmarks-key.pem`
-- Verify server is accessible: `ssh -i ~/.ssh/twitter-bookmarks-key.pem ec2-user@13.62.72.70`
+- Verify server is accessible: `ssh -i ~/.ssh/twitter-bookmarks-key.pem ec2-user@13.49.172.180`
 
 ### Code changes not taking effect
 - Clear Python cache: `find . -name "*.pyc" -delete && find . -name __pycache__ -delete`
@@ -142,7 +142,7 @@ All scripts use these defaults (can be overridden):
 ```bash
 export SSH_KEY="~/.ssh/twitter-bookmarks-key.pem"
 export SERVER_USER="ec2-user"
-export SERVER_HOST="13.62.72.70"
+export SERVER_HOST="13.49.172.180"
 ```
 
 ## Best Practices

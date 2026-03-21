@@ -10,7 +10,7 @@ NC='\033[0m'
 
 SSH_KEY="${SSH_KEY:-~/.ssh/twitter-bookmarks-key.pem}"
 SERVER_USER="${SERVER_USER:-ec2-user}"
-SERVER_HOST="${SERVER_HOST:-13.62.72.70}"
+SERVER_HOST="${SERVER_HOST:-13.49.172.180}"
 
 echo -e "${GREEN}=== Server Cleanup ===${NC}"
 echo ""

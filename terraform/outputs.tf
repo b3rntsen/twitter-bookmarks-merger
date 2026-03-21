@@ -15,22 +15,12 @@ output "instance_public_dns" {
 
 output "application_url" {
   description = "URL to access the application"
-  value       = "http://twitter.vibe.dethele.com:8000"
+  value       = "https://twitter.dethele.com"
 }
 
 output "application_url_ip" {
   description = "URL to access the application via IP"
-  value       = "http://${aws_eip.web_eip.public_ip}:8000"
-}
-
-output "route53_nameservers" {
-  description = "Route 53 nameservers for vibe.dethele.com - configure these on one.com"
-  value       = aws_route53_zone.vibe_dethele.name_servers
-}
-
-output "route53_zone_id" {
-  description = "Route 53 hosted zone ID for vibe.dethele.com"
-  value       = aws_route53_zone.vibe_dethele.zone_id
+  value       = "http://${aws_eip.web_eip.public_ip}"
 }
 
 output "ssh_command" {

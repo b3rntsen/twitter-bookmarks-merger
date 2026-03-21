@@ -11,7 +11,7 @@ NC='\033[0m'
 # Configuration
 SSH_KEY="${SSH_KEY:-~/.ssh/twitter-bookmarks-key.pem}"
 SERVER_USER="${SERVER_USER:-ec2-user}"
-SERVER_HOST="${SERVER_HOST:-13.62.72.70}"
+SERVER_HOST="${SERVER_HOST:-13.49.172.180}"
 AWS_REGION="${AWS_REGION:-eu-north-1}"
 NEW_SIZE="${1:-60}"  # Default to 60GB, or pass as argument
 
