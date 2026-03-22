@@ -424,8 +424,17 @@ def regenerate_static_site():
             logger.warning(f"bookmark_merger.py not found at {merger_script}")
             return False
 
-        # Run publish-server to generate static HTML
-        logger.info("Regenerating static site with publish-server...")
+        # Run generate first (creates timeline, stories, authors in master/html/)
+        # then publish-server (creates server-optimized HTML from master/html/)
+        logger.info("Regenerating static site: generate + publish-server...")
+        gen_result = subprocess.run(
+            [sys.executable, str(merger_script), 'generate'],
+            capture_output=True, text=True, timeout=300,
+            cwd=str(TOOLS_DIR.parent)
+        )
+        if gen_result.returncode != 0:
+            logger.warning(f"generate step had issues: {gen_result.stderr[:300]}")
+
         result = subprocess.run(
             [sys.executable, str(merger_script), 'publish-server'],
             capture_output=True, text=True, timeout=300,
