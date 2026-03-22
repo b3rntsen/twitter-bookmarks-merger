@@ -42,6 +42,7 @@ services:
       - PYTHONUNBUFFERED=1
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - STATIC_ROOT=/app/staticfiles
       - Q_WORKERS=1  # Reduce workers to 1 for memory conservation
     depends_on:
       redis:
@@ -71,6 +72,8 @@ services:
       - media:/app/media
       - db_data:/app/db
       - ./birdmarks:/app/birdmarks:ro
+      - ./birdmarks_cache:/app/birdmarks_cache
+      - ./bookmarks-media:/app/bookmarks-media
       - ./master:/app/master
       - ./server:/app/server
       - ./bookmarks-html:/app/bookmarks-html
@@ -82,6 +85,7 @@ services:
       - REDIS_PORT=6379
       - Q_WORKERS=1  # Process only one job at a time to limit memory usage
       - Q_QUEUE_LIMIT=10  # Reduce queue limit
+      - BOOKMARKS_MEDIA_DIR=/app/bookmarks-media
     depends_on:
       redis:
         condition: service_healthy

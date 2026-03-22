@@ -20,7 +20,8 @@ from markdown_parser import parse_frontmatter, extract_tweet_text, extract_media
 
 SECRETS_FILE = Path.home() / ".openclaw" / "secrets" / "twitter-cookies.json"
 BIRDMARKS_DIR = Path(__file__).parent.parent / "birdmarks"  # Project root / birdmarks
-BIRDMARKS_BIN = BIRDMARKS_DIR / "birdmarks"  # Precompiled binary
+import platform
+BIRDMARKS_BIN = BIRDMARKS_DIR / ("birdmarks-macos" if platform.system() == "Darwin" else "birdmarks")
 OUTPUT_DIR = Path(__file__).parent.parent / "raw" / "json"
 BIRDMARKS_CACHE = Path(__file__).parent.parent / "birdmarks_cache"  # Persistent cache for state
 

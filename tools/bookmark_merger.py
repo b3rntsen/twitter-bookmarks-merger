@@ -52,7 +52,7 @@ MASTER_JSON = MASTER_DIR / "bookmarks.json"
 MASTER_CATEGORIES = MASTER_DIR / "categories.json"
 MASTER_STORIES = MASTER_DIR / "stories.json"
 MASTER_AUTHORS = MASTER_DIR / "authors.json"
-MASTER_MEDIA_DIR = MASTER_DIR / "media"
+MASTER_MEDIA_DIR = Path(os.environ.get("BOOKMARKS_MEDIA_DIR", str(MASTER_DIR / "media")))
 MASTER_HTML_DIR = MASTER_DIR / "html"
 MASTER_EXPORTS_DIR = MASTER_DIR / "exports"
 MASTER_QUOTED_TWEETS = MASTER_DIR / "quoted_tweets.json"
@@ -4493,48 +4493,10 @@ function applyFilters() {{
     print(f"Generated CDN-based HTML in {html_dir}")
 
 
-def add_newgen_link(html: str) -> str:
-    """Add 'New-Gen' link to navbar for server version"""
-    # Add New-Gen link after Authors link (handles both relative and absolute paths)
-    html = html.replace(
-        '<a href="../authors/index.html">Authors</a>',
-        '<a href="../authors/index.html">Authors</a>\n        <a href="/new-gen/">New-Gen</a>'
-    )
-    html = html.replace(
-        '<a href="/authors/index.html">Authors</a>',
-        '<a href="/authors/index.html">Authors</a>\n        <a href="/new-gen/">New-Gen</a>'
-    )
-    # Handle authors pages where Authors link is self-referential
-    html = html.replace(
-        '<a href="index.html">Authors</a>',
-        '<a href="index.html">Authors</a>\n        <a href="/new-gen/">New-Gen</a>'
-    )
-    # Also handle stories pages that haven't been regenerated yet
-    html = html.replace(
-        '<a href="../stories/index.html">Stories</a>\n        <a href="../authors/index.html">Authors</a>',
-        '<a href="../stories/index.html">Stories</a>\n        <a href="../authors/index.html">Authors</a>\n        <a href="/new-gen/">New-Gen</a>'
-    )
-    return html
-
 
 def add_admin_link(html: str) -> str:
-    """Add 'Django Admin' link to navbar for admins only (with JS to show conditionally)"""
-    # Add hidden admin link after Authors link
-    admin_link = '<a href="/admin/" id="admin-link" style="display:none;">Django Admin</a>'
-    admin_js = '''
-<script>
-// Check if user is admin and show admin link
-fetch('/accounts/user-info/')
-    .then(r => r.json())
-    .then(data => {
-        if (data.is_admin) {
-            const link = document.getElementById('admin-link');
-            if (link) link.style.display = '';
-        }
-    })
-    .catch(() => {});
-</script>
-'''
+    """Add 'Admin' link to navbar"""
+    admin_link = '<a href="/admin/">Admin</a>'
     # Add admin link after Authors link (multiple path patterns)
     if '<a href="/authors/index.html">Authors</a>' in html:
         html = html.replace(
@@ -4551,8 +4513,6 @@ fetch('/accounts/user-info/')
             '<a href="index.html">Authors</a>',
             f'<a href="index.html">Authors</a>\n        {admin_link}'
         )
-    # Add the JavaScript before closing body tag
-    html = html.replace('</body>', f'{admin_js}</body>')
     return html
 
 
@@ -4939,7 +4899,6 @@ function escapeHtml(text) {{
 """
     page = HTML_BASE.format(title="Twitter Bookmarks", content=index_content)
     page = fix_paths_for_server(page)
-    page = add_newgen_link(page)
     page = add_admin_link(page)
     page = page.replace('href="/index.html"', 'href="/"')
     with open(html_dir / "index.html", "w", encoding="utf-8") as f:
@@ -5035,7 +4994,6 @@ document.querySelectorAll('.year-link').forEach(link => {{
     cat_index_content += timeline_js
     page = HTML_BASE.format(title="Categories", content=cat_index_content)
     page = fix_paths_for_server(page)
-    page = add_newgen_link(page)
     page = add_admin_link(page)
     with open(html_dir / "categories" / "index.html", "w", encoding="utf-8") as f:
         f.write(page)
@@ -5110,7 +5068,6 @@ function applyFilters() {{
 '''
         page = HTML_BASE.format(title=cat_info.get("name", cat_id), content=content)
         page = fix_paths_for_server(page)
-        page = add_newgen_link(page)
         page = add_admin_link(page)
         with open(html_dir / "categories" / f"{cat_id}.html", "w", encoding="utf-8") as f:
             f.write(page)
@@ -5132,7 +5089,6 @@ function applyFilters() {{
                     content = f.read()
 
                 content = fix_paths_for_server(content)
-                content = add_newgen_link(content)
                 content = add_admin_link(content)
                 # Fix media paths to absolute server paths
                 content = content.replace('../../../media/', '/media/bookmarks/')
@@ -5156,7 +5112,6 @@ function applyFilters() {{
                 content = f.read()
 
             content = fix_paths_for_server(content)
-            content = add_newgen_link(content)
             content = add_admin_link(content)
             # Fix media paths
             content = content.replace('../../media/', '/media/bookmarks/')
@@ -5182,7 +5137,6 @@ function applyFilters() {{
                 content = f.read()
 
             content = fix_paths_for_server(content)
-            content = add_newgen_link(content)
             content = add_admin_link(content)
             # Fix media paths
             content = content.replace('../../media/', '/media/bookmarks/')

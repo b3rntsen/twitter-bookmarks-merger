@@ -23,6 +23,164 @@ MASTER_DIR = Path(__file__).parent.parent.parent / 'master'
 TOOLS_DIR = Path(__file__).parent.parent.parent / 'tools'
 SERVER_HTML_DIR = Path(__file__).parent.parent.parent / 'server' / 'html'
 BOOKMARKS_HTML_DIR = Path(__file__).parent.parent.parent / 'bookmarks-html'
+BIRDMARKS_CACHE = Path(__file__).parent.parent.parent / 'birdmarks_cache'
+BOOKMARKS_MEDIA_DIR = Path(os.environ.get('BOOKMARKS_MEDIA_DIR',
+                                           str(MASTER_DIR / 'media')))
+
+
+def sync_all_media(cache_dir: Path) -> int:
+    """Copy ALL media from birdmarks markdown files to bookmarks-media/{tweet_id}/.
+
+    Parses every .md file in cache_dir, not just new tweets. Idempotent - skips
+    files that already exist at the destination with the same size.
+    """
+    import shutil
+    copied = 0
+    for md_file in cache_dir.glob('*.md'):
+        try:
+            content = md_file.read_text(encoding='utf-8')
+            frontmatter, body = parse_frontmatter(content)
+            tweet_id = str(frontmatter.get('id', ''))
+            if not tweet_id:
+                continue
+
+            filenames = extract_media_filenames(body)
+            if not filenames:
+                continue
+
+            tweet_dir = BOOKMARKS_MEDIA_DIR / tweet_id
+            for filename in filenames:
+                src = cache_dir / 'assets' / filename
+                if not src.exists():
+                    continue
+                dest = tweet_dir / filename
+                if dest.exists() and dest.stat().st_size == src.stat().st_size:
+                    continue
+                tweet_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest)
+                copied += 1
+        except Exception as e:
+            logger.warning(f"sync_all_media: error processing {md_file.name}: {e}")
+            continue
+
+    if copied:
+        logger.info(f"sync_all_media: copied {copied} media files to {BOOKMARKS_MEDIA_DIR}")
+    return copied
+
+
+def categorize_uncategorized_tweets(max_per_cycle: int = 100) -> int:
+    """Categorize tweets that are in bookmarks.json but not in categories.json.
+
+    Uses the Anthropic API with existing categories as context.
+    Returns count of newly categorized tweets.
+    """
+    from collections import defaultdict
+
+    categories_file = MASTER_DIR / 'categories.json'
+    bookmarks_file = MASTER_DIR / 'bookmarks.json'
+
+    if not bookmarks_file.exists():
+        return 0
+
+    api_key = os.environ.get('ANTHROPIC_API_KEY', '')
+    if not api_key:
+        logger.info("categorize_uncategorized_tweets: ANTHROPIC_API_KEY not set, skipping")
+        return 0
+
+    try:
+        import anthropic
+    except ImportError:
+        logger.warning("categorize_uncategorized_tweets: anthropic package not installed")
+        return 0
+
+    # Load data
+    with open(bookmarks_file, 'r', encoding='utf-8') as f:
+        bookmarks = json.load(f)
+
+    existing_categories = {"categories": {}, "tweet_categories": {}}
+    if categories_file.exists():
+        with open(categories_file, 'r', encoding='utf-8') as f:
+            existing_categories = json.load(f)
+
+    # Find uncategorized tweet IDs
+    tweet_categories = existing_categories.get("tweet_categories", {})
+    uncategorized = [b for b in bookmarks if b["Tweet Id"] not in tweet_categories]
+    if not uncategorized:
+        return 0
+
+    uncategorized = uncategorized[:max_per_cycle]
+    logger.info(f"categorize_uncategorized_tweets: {len(uncategorized)} tweets to categorize")
+
+    client = anthropic.Anthropic(api_key=api_key)
+    existing_cat_info = existing_categories.get("categories", {})
+    all_cat_list = ", ".join(existing_cat_info.keys())
+
+    if not all_cat_list:
+        logger.warning("categorize_uncategorized_tweets: no existing categories, skipping")
+        return 0
+
+    # Rebuild category_tweets index
+    category_tweets = defaultdict(list)
+    for cat_id, cat_info in existing_cat_info.items():
+        if "tweet_ids" in cat_info:
+            category_tweets[cat_id] = list(cat_info["tweet_ids"])
+
+    categorized_count = 0
+    batch_size = 20
+    for i in range(0, len(uncategorized), batch_size):
+        batch = uncategorized[i:i + batch_size]
+        batch_prompt = f"""Categorize these tweets. Available categories: {all_cat_list}
+
+Assign 1-3 categories to each tweet. Return JSON only:
+{{"tweet_id": ["category1", "category2"]}}
+
+Tweets:
+"""
+        for b in batch:
+            batch_prompt += f'\n{b.get("Tweet Id")}: {b.get("Full Text", "")[:300]}'
+
+        try:
+            response = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=2000,
+                messages=[{"role": "user", "content": batch_prompt}]
+            )
+            result_text = response.content[0].text
+            if "```json" in result_text:
+                result_text = result_text.split("```json")[1].split("```")[0]
+            elif "```" in result_text:
+                result_text = result_text.split("```")[1].split("```")[0]
+            batch_results = json.loads(result_text)
+
+            for tid, cats in batch_results.items():
+                tweet_categories[tid] = cats
+                for cat in cats:
+                    if cat in existing_cat_info and tid not in category_tweets[cat]:
+                        category_tweets[cat].append(tid)
+                categorized_count += 1
+        except Exception as e:
+            logger.warning(f"categorize_uncategorized_tweets: batch error: {e}")
+            continue
+
+    # Save updated categories
+    final_categories = {
+        "categories": {},
+        "tweet_categories": dict(tweet_categories)
+    }
+    for cat_id, cat_info in existing_cat_info.items():
+        final_categories["categories"][cat_id] = {
+            "name": cat_info.get("name", cat_id),
+            "description": cat_info.get("description", ""),
+            "tweet_ids": category_tweets.get(cat_id, []),
+            "summaries": cat_info.get("summaries", {})
+        }
+
+    categories_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(categories_file, 'w', encoding='utf-8') as f:
+        json.dump(final_categories, f, indent=2, ensure_ascii=False)
+
+    logger.info(f"categorize_uncategorized_tweets: categorized {categorized_count} tweets")
+    return categorized_count
 
 
 def import_tweet_media(tweet: Tweet, markdown_body: str, cache_dir: Path) -> int:
@@ -47,6 +205,10 @@ def import_tweet_media(tweet: Tweet, markdown_body: str, cache_dir: Path) -> int
     tweet_media_dir = Path(settings.MEDIA_ROOT) / 'tweets' / str(tweet.tweet_id)
     tweet_media_dir.mkdir(parents=True, exist_ok=True)
 
+    # Also create bookmarks media directory (for static site)
+    bookmarks_media_dir = Path('/app/bookmarks-media') / str(tweet.tweet_id)
+    bookmarks_media_dir.mkdir(parents=True, exist_ok=True)
+
     media_count = 0
     for filename in filenames:
         source = cache_dir / 'assets' / filename
@@ -58,10 +220,12 @@ def import_tweet_media(tweet: Tweet, markdown_body: str, cache_dir: Path) -> int
         raw_type = classify_media_type(filename)
         media_type = 'image' if raw_type == 'photo' else raw_type
 
-        # Copy to Django media
+        # Copy to Django media and bookmarks media
         dest = tweet_media_dir / filename
+        bookmarks_dest = bookmarks_media_dir / filename
         try:
             shutil.copy2(source, dest)
+            shutil.copy2(source, bookmarks_dest)
             file_size = dest.stat().st_size
 
             # Generate video thumbnail
@@ -318,7 +482,8 @@ def execute_bookmark_sync(sync_job_id: int):
 
         # Call birdmarks binary directly (bypass bridge script to avoid subprocess nesting)
         birdmarks_bin = Path(__file__).parent.parent.parent / "birdmarks" / "birdmarks"
-        output_dir = Path("/tmp") / f"birdmarks_output_{profile.id}"
+        # Use persistent dir so birdmarks state file and assets survive between runs
+        output_dir = Path(__file__).parent.parent.parent / "birdmarks_cache"
         output_dir.mkdir(parents=True, exist_ok=True)
 
         # Get cookies from database
@@ -374,75 +539,99 @@ def execute_bookmark_sync(sync_job_id: int):
         stderr = result.stderr
         logger.info(f"Binary returned: exit_code={result.returncode}, stdout_len={len(stdout)}, stderr_len={len(stderr)}")
 
-        # Import bookmarks from markdown files, then clean up
-        try:
-            md_files = list(output_dir.glob("*.md")) if output_dir.exists() else []
-            logger.info(f"Found {len(md_files)} .md files in {output_dir}")
+        # Store birdmarks output as job log (visible in admin)
+        job.error_message = (stderr or stdout or '')[:4000]
+        job.save()
 
+        # --- Post-fetch pipeline: always runs all steps ---
+        # Step 1: Import new tweets to DB (skips duplicates)
+        md_files = list(output_dir.glob("*.md")) if output_dir.exists() else []
+        logger.info(f"Found {len(md_files)} .md files in {output_dir}")
+
+        bookmarks_count = 0
+        try:
             bookmarks_count = import_markdown_bookmarks(output_dir, profile)
-            logger.info(f"Successfully imported {bookmarks_count} bookmarks into database")
+            logger.info(f"Imported {bookmarks_count} new bookmarks into database")
         except Exception as import_error:
             logger.error(f"Failed to import bookmarks: {import_error}")
-            bookmarks_count = 0
-        finally:
-            # Clean up temp output directory
-            if output_dir.exists():
-                import shutil
-                shutil.rmtree(output_dir, ignore_errors=True)
 
-        # Check for success
-        if result.returncode == 0:
+        # Step 2: Sync ALL media from cache to bookmarks-media/ (not just new tweets)
+        media_copied = 0
+        try:
+            media_copied = sync_all_media(output_dir)
+        except Exception as media_error:
+            logger.error(f"Media sync failed: {media_error}")
+
+        # Step 3: Export all tweets to master/bookmarks.json
+        try:
+            new_exported = export_django_tweets_to_bookmarks_json()
+            logger.info(f"Exported {new_exported} new tweets to master/bookmarks.json")
+        except Exception as export_error:
+            logger.error(f"Export to bookmarks.json failed: {export_error}")
+
+        # Step 4: Categorize uncategorized tweets via Anthropic API
+        categorized = 0
+        try:
+            categorized = categorize_uncategorized_tweets()
+        except Exception as cat_error:
+            logger.error(f"Categorization failed: {cat_error}")
+
+        # Step 5: Regenerate static site HTML
+        try:
+            regenerate_static_site()
+        except Exception as regen_error:
+            logger.error(f"Static site regeneration failed: {regen_error}")
+
+        # --- Determine success/failure ---
+        # Success if: birdmarks connected (md files exist OR exit code 0)
+        # This handles rate-limited partial fetches as success
+        has_cache_data = len(md_files) > 0
+        error_text = (stderr or '') + (stdout or '')
+
+        if result.returncode == 0 or has_cache_data:
             job.status = 'success'
             job.bookmarks_fetched = bookmarks_count
             job.completed_at = timezone.now()
 
-            # Reset consecutive failures and backoff
             schedule.consecutive_failures = 0
             schedule.backoff_multiplier = 1
             schedule.last_error_type = ''
 
-            # Update TwitterProfile
             profile.last_sync_at = timezone.now()
             profile.sync_status = 'success'
             profile.sync_error_message = ''
 
-            logger.info(f"Bookmark sync successful for {profile.twitter_username}: {bookmarks_count} bookmarks")
-
-            # Regenerate static site with new bookmarks
-            try:
-                new_exported = export_django_tweets_to_bookmarks_json()
-                if new_exported > 0 or bookmarks_count > 0:
-                    regenerate_static_site()
-            except Exception as regen_error:
-                logger.error(f"Static site regeneration failed: {regen_error}")
+            summary = (
+                f"Sync OK: {bookmarks_count} new tweets, "
+                f"{media_copied} media copied, {categorized} categorized"
+            )
+            logger.info(f"{summary} for {profile.twitter_username}")
+            # Append summary to job log (birdmarks output already saved)
+            job.error_message = (job.error_message or '') + f"\n\n--- RESULT ---\n{summary}"
         else:
-            # Parse error type
+            # True failure: birdmarks couldn't connect at all
             error_type = 'unknown'
-            error_text = stderr + stdout  # Check both streams
-
             if 'auth_token' in error_text or 'ct0' in error_text or 'Cookies file not found' in error_text:
                 error_type = 'cookie_expired'
             elif 'timeout' in error_text.lower():
                 error_type = 'timeout'
-            elif 'rate limit' in error_text.lower():
+            elif 'rate limit' in error_text.lower() or 'Rate Limited' in error_text:
                 error_type = 'rate_limit'
             else:
                 error_type = 'fetch_error'
 
             job.status = 'failed'
-            job.error_message = stderr[:1000] if stderr else stdout[:1000]  # Truncate
+            job.error_message = (stderr or stdout or '')[:1000]
             job.error_type = error_type
             job.completed_at = timezone.now()
 
-            # Increment consecutive failures and track error type
             schedule.consecutive_failures += 1
             schedule.last_error_type = error_type
 
             logger.error(f"Bookmark sync failed for {profile.twitter_username}: {error_type}")
 
-            # Update TwitterProfile
             profile.sync_status = 'error'
-            profile.sync_error_message = f"{error_type}: {(stderr or stdout)[:200]}"
+            profile.sync_error_message = f"{error_type}: {(stderr or stdout or '')[:200]}"
 
         profile.save()
         schedule.save()
@@ -535,6 +724,16 @@ def schedule_next_bookmark_sync(twitter_profile_id: int):
         if next_sync <= now:
             logger.warning(f"Calculated next_sync {next_sync} is not in future for {profile.twitter_username}, adjusting")
             next_sync = now + timedelta(minutes=schedule.interval_minutes)
+
+        # Cancel any orphan pending jobs for this profile
+        orphans = BookmarkSyncJob.objects.filter(
+            twitter_profile=profile, status='pending'
+        )
+        orphan_count = orphans.count()
+        if orphan_count:
+            orphans.update(status='failed', error_type='cancelled',
+                          error_message='Cancelled: superseded by newer scheduled job')
+            logger.info(f"Cancelled {orphan_count} orphan pending job(s) for {profile.twitter_username}")
 
         # Create pending job
         job = BookmarkSyncJob.objects.create(
