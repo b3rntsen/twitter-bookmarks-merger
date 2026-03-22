@@ -69,34 +69,51 @@ python3 tools/bookmark_merger.py cleanup-raw  # Delete raw/ (DESTRUCTIVE, separa
 - `tools/` - CLI processing tools (bookmark_merger.py)
 - `web/` - Django app (handles OAuth, job scheduling via Django-Q, admin at `/admin/`). The `/new-gen/` URL prefix is historic and should be ignored - all Django functionality lives under `/admin/` and `/accounts/`.
 
-**Data Flow:**
-1. Raw JSON exports deduplicated by Tweet ID (keeps most recent `Scraped At`)
-2. Media files from all exports merged (skips `.crdownload` incomplete files)
-3. AI categorization discovers taxonomy, assigns categories, generates summaries
-4. HTML generation creates navigable pages with embedded local media
+**Data Flow — HTML Generation Pipeline (3 stages):**
+
+1. **`generate`** → creates `master/html/` (timeline, categories, stories, authors, tweets, search index)
+   - Reads: `master/bookmarks.json` + `categories.json` + `stories.json` + `quoted_tweets.json`
+   - Scans `master/media/{tweet_id}/` for media files (or `BOOKMARKS_MEDIA_DIR` env var on server)
+   - **Must run before `publish-server`** — otherwise timeline/stories/authors will be empty
+
+2. **`publish-server`** → creates `server/html/` with server-optimized paths
+   - Regenerates index + categories with absolute `/media/bookmarks/` paths
+   - **Copies** timeline, stories, authors from `master/html/` (fixing paths)
+   - Does NOT generate these sections itself — depends on step 1
+
+3. **`deploy-bookmarks.sh`** → rsync `server/html/` to `bookmarks-html/` on EC2
+
+**Server-Side Automated Sync (every 15 min):**
+
+Django-Q runs `execute_bookmark_sync` in the qcluster container. After each birdmarks fetch:
+1. Import new tweets to Django DB (skips duplicates)
+2. Sync ALL media from `birdmarks_cache/assets/` → `bookmarks-media/{tweet_id}/`
+3. Export all tweets to `master/bookmarks.json`
+4. Categorize uncategorized tweets via Anthropic API → updates `master/categories.json`
+5. Run `generate` + `publish-server` → copy to `bookmarks-html/` (live site)
+
+Rate-limited fetches are treated as success (partial data is still processed). Real failures use exponential backoff. Cookie expiration disables sync after 5 consecutive failures.
 
 **Configuration:**
-- `.env` - API keys, OAuth credentials, database settings (see `.env.example`)
-- Script auto-loads `.env` at startup
+- `.env` - API keys (ANTHROPIC_API_KEY, TWITTER_AUTH_TOKEN, TWITTER_CT0), OAuth credentials, database settings
+- `BOOKMARKS_MEDIA_DIR` env var in docker-compose.prod.yml — tells `generate`/`publish-server` where to find media on server (`/app/bookmarks-media/`)
 
 ## Server Deployment
 
-The site can be deployed to `twitter.dethele.com` with Google OAuth protection:
+Site at `twitter.dethele.com` with Google OAuth protection.
 
 **URLs:**
-- `/` - Static bookmarks HTML (from `tools/`)
-- `/admin/` - Django admin (user management, sync status)
+- `/` - Static bookmarks HTML (index, categories, timeline, stories, authors, search)
+- `/admin/` - Django admin (sync job status, user management)
 - `/accounts/` - OAuth login via Google
-- `/new-gen/` - Historic prefix, ignore. Django scheduling/sync uses Django-Q via admin.
+- `/media/bookmarks/` - Bookmark media files (images, videos)
 
-**Deployment:**
+**Manual deployment (from local):**
 ```bash
-# Generate server HTML (uses absolute /media/bookmarks/ paths)
-python3 tools/bookmark_merger.py publish-server
-
-# Deploy to EC2 (requires SSH access)
-./scripts/deploy-bookmarks.sh          # Full deploy (HTML + 12GB media)
-./scripts/deploy-bookmarks.sh --html-only  # Quick deploy (HTML only)
+python3 tools/bookmark_merger.py generate        # Stage 1: master/html/
+python3 tools/bookmark_merger.py publish-server   # Stage 2: server/html/
+./scripts/deploy-bookmarks.sh                     # Stage 3: rsync to server
+./scripts/deploy-bookmarks.sh --html-only         # HTML only (faster)
 ```
 
 **Docker (on server):**
@@ -104,25 +121,14 @@ python3 tools/bookmark_merger.py publish-server
 docker-compose -f docker-compose.prod.yml up -d --build
 ```
 
-**Server Maintenance:**
+**Deploy code changes to server:**
 ```bash
-# Clean up Docker resources on server (frees disk space)
-./scripts/cleanup-server.sh
-
-# Resize EC2 disk (live, no reboot needed)
-./scripts/resize-server-disk.sh 60      # Resize to 60GB
-./scripts/resize-server-disk.sh 100     # Resize to 100GB
-
-# Deploy Django app to server
-./scripts/upload-to-aws.sh              # Full deploy with Docker rebuild
-./scripts/deploy-to-production.sh       # Alternative deploy script
+./scripts/deploy-to-production.sh       # rsync code + rebuild containers
 ```
 
 **Admin Panel:**
-- `/accounts/admin/` - User management (view users, invite new users)
-- All @dethele.com Google users can view user list and invite
-- Admin (nikolaj@dethele.com) can delete users
-- Invited users set password on first login (8+ chars, not all lowercase)
+- `/admin/` - Bookmark sync jobs (logs, status), user management
+- Admin: nikolaj@dethele.com (login via Google OAuth, then access /admin/)
 
 ## Important Rules
 
