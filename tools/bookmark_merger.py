@@ -24,6 +24,7 @@ import argparse
 import json
 import markdown
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -56,6 +57,8 @@ MASTER_MEDIA_DIR = Path(os.environ.get("BOOKMARKS_MEDIA_DIR", str(MASTER_DIR / "
 MASTER_HTML_DIR = MASTER_DIR / "html"
 MASTER_EXPORTS_DIR = MASTER_DIR / "exports"
 MASTER_QUOTED_TWEETS = MASTER_DIR / "quoted_tweets.json"
+MASTER_ARTICLES = MASTER_DIR / "articles.json"
+BIRDMARKS_CACHE_DIR = BASE_DIR / "birdmarks_cache"
 
 # Synonym dictionary for search expansion
 SYNONYMS_DICT = {
@@ -1159,6 +1162,28 @@ HTML_BASE = """<!DOCTYPE html>
             white-space: pre-wrap;
             word-break: break-word;
         }}
+        .article-card {{
+            display: flex;
+            gap: 12px;
+            padding: 12px;
+            margin-bottom: 15px;
+            border: 1px solid #2f3336;
+            border-radius: 12px;
+            background: #16181c;
+        }}
+        .article-icon {{
+            font-size: 24px;
+            flex-shrink: 0;
+        }}
+        .article-title {{
+            font-weight: 600;
+            margin-bottom: 4px;
+        }}
+        .article-excerpt {{
+            color: #71767b;
+            font-size: 0.9em;
+            line-height: 1.4;
+        }}
         .tweet-media {{
             margin-bottom: 15px;
         }}
@@ -1743,10 +1768,12 @@ def render_media_html_cdn(bookmark: dict) -> str:
 
 
 def generate_tweets_json(bookmarks: list[dict], categories_data: dict | None,
-                         media_mode: str = "local") -> list[dict]:
+                         media_mode: str = "local",
+                         articles_index: dict | None = None) -> list[dict]:
     """Generate JSON data for tweets, suitable for infinite scroll.
 
     media_mode: "local" (relative paths), "server" (absolute /media/bookmarks/), "cdn" (Twitter CDN)
+    articles_index: {tweet_id: {title, excerpt, filename}} from build_articles_index()
     """
     tweets_data = []
 
@@ -1820,6 +1847,11 @@ def generate_tweets_json(bookmarks: list[dict], categories_data: dict | None,
                     else:
                         media.append({"type": "image", "src": url})
 
+        # Check for article
+        article = None
+        if articles_index and tweet_id in articles_index:
+            article = articles_index[tweet_id]
+
         tweet_data = {
             "id": tweet_id,
             "author": f"@{bookmark.get('User Screen Name', 'unknown')}",
@@ -1835,6 +1867,8 @@ def generate_tweets_json(bookmarks: list[dict], categories_data: dict | None,
             "replies": bookmark.get("Reply Count", 0),
             "tweet_url": f"https://x.com/{bookmark.get('User Screen Name', 'unknown')}/status/{tweet_id}"
         }
+        if article:
+            tweet_data["article"] = article
         tweets_data.append(tweet_data)
 
     return tweets_data
@@ -1973,6 +2007,69 @@ def build_category_timeline(bookmarks: list[dict], categories_data: dict) -> dic
         cat: {year: dict(months) for year, months in years.items()}
         for cat, years in timeline.items()
     }
+
+
+def build_articles_index(cache_dir: Path = None) -> dict:
+    """Build index mapping tweet_id → article metadata from birdmarks cache.
+
+    Scans markdown files for [Read full article](articles/filename.md) links,
+    reads the article file to extract title and excerpt.
+
+    Returns: {tweet_id: {title, excerpt, filename}}
+    """
+    if cache_dir is None:
+        cache_dir = BIRDMARKS_CACHE_DIR
+
+    articles_dir = cache_dir / "articles"
+    if not cache_dir.exists():
+        return {}
+
+    index = {}
+    for md_file in cache_dir.glob("*.md"):
+        try:
+            content = md_file.read_text(encoding="utf-8")
+            # Extract tweet ID from frontmatter
+            id_match = re.search(r'^id:\s*"?(\d+)"?', content, re.MULTILINE)
+            if not id_match:
+                continue
+            tweet_id = id_match.group(1)
+
+            # Find article references
+            article_refs = re.findall(r'\[Read full article\]\(articles/([^)]+)\)', content)
+            if not article_refs:
+                continue
+
+            filename = article_refs[0]
+            article_path = articles_dir / filename
+            if not article_path.exists():
+                continue
+
+            # Read article to get title and excerpt
+            article_content = article_path.read_text(encoding="utf-8")
+            lines = [l.strip() for l in article_content.split("\n") if l.strip()]
+
+            title = ""
+            excerpt = ""
+            for line in lines:
+                if line.startswith("# ") and not title:
+                    title = line[2:].strip()
+                elif not line.startswith("#") and not line.startswith("**@") and not line.startswith("---") and len(line) > 20:
+                    if not excerpt:
+                        excerpt = line[:300]
+
+            if not title:
+                # Use filename as fallback title
+                title = filename.replace(".md", "").replace("-", " ")
+
+            index[tweet_id] = {
+                "title": title,
+                "excerpt": excerpt[:200] + ("..." if len(excerpt) > 200 else ""),
+                "filename": filename,
+            }
+        except Exception:
+            continue
+
+    return index
 
 
 def build_search_index(bookmarks: list[dict], show_progress: bool = True) -> dict:
@@ -4555,7 +4652,13 @@ def generate_html_server(output_dir: Path, bookmarks: list[dict], categories_dat
         key=lambda x: parse_tweet_date(x.get("Created At", "")) or datetime.min.replace(tzinfo=None),
         reverse=True
     )
-    tweets_json = generate_tweets_json(sorted_bookmarks, categories_data, media_mode="server")
+    # Build articles index from birdmarks cache
+    articles_index = build_articles_index()
+    if articles_index:
+        print(f"  Found {len(articles_index)} tweets with articles")
+
+    tweets_json = generate_tweets_json(sorted_bookmarks, categories_data, media_mode="server",
+                                       articles_index=articles_index)
 
     # Split into chunks of 100 tweets each for lazy loading
     CHUNK_SIZE = 100
@@ -4823,6 +4926,17 @@ function filterTweets(query) {{
     }}
 }}
 
+function renderArticleCard(article) {{
+    if (!article) return '';
+    return `<div class="article-card">
+        <div class="article-icon">&#128196;</div>
+        <div class="article-content">
+            <div class="article-title">${{escapeHtml(article.title)}}</div>
+            ${{article.excerpt ? `<div class="article-excerpt">${{escapeHtml(article.excerpt)}}</div>` : ''}}
+        </div>
+    </div>`;
+}}
+
 function renderTweetCard(tweet) {{
     const card = document.createElement('article');
     card.className = 'tweet-card';
@@ -4832,6 +4946,7 @@ function renderTweetCard(tweet) {{
     ).join(' ');
 
     const mediaHtml = renderMedia(tweet.media, tweet.tweet_url);
+    const articleHtml = renderArticleCard(tweet.article);
 
     card.innerHTML = `
         <div class="tweet-header">
@@ -4844,6 +4959,7 @@ function renderTweetCard(tweet) {{
             </div>
         </div>
         <div class="tweet-text">${{escapeHtml(tweet.text)}}</div>
+        ${{articleHtml}}
         ${{mediaHtml}}
         ${{categoriesHtml ? `<div class="tweet-categories">${{categoriesHtml}}</div>` : ''}}
         <div class="tweet-stats">
