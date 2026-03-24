@@ -106,17 +106,17 @@ class BookmarkSyncJobAdmin(admin.ModelAdmin):
         'status_display',
         'bookmarks_fetched',
         'duration',
-        'error_type',
-        'log_preview',
+        'summary_preview',
     ]
     list_filter = ['status', 'error_type', 'scheduled_at']
     search_fields = ['twitter_profile__twitter_username', 'error_message']
     readonly_fields = [
         'scheduled_at', 'started_at', 'completed_at',
-        'bookmarks_fetched', 'pages_fetched', 'error_type', 'log_display'
+        'bookmarks_fetched', 'pages_fetched', 'error_type',
+        'summary_display', 'raw_log_display'
     ]
-    exclude = ['error_message']  # replaced by log_display
-    actions = ['mark_failed_as_pending', 'cancel_pending_jobs']
+    exclude = ['error_message']
+    actions = ['mark_failed_as_pending', 'cancel_pending_jobs', 'view_raw_logs']
 
     fieldsets = (
         ('Job Info', {
@@ -128,8 +128,12 @@ class BookmarkSyncJobAdmin(admin.ModelAdmin):
         ('Results', {
             'fields': ('bookmarks_fetched', 'pages_fetched', 'error_type')
         }),
-        ('Log Output', {
-            'fields': ('log_display',),
+        ('Summary', {
+            'fields': ('summary_display',),
+        }),
+        ('Raw Logs', {
+            'fields': ('raw_log_display',),
+            'classes': ('collapse',),
         }),
     )
 
@@ -154,26 +158,67 @@ class BookmarkSyncJobAdmin(admin.ModelAdmin):
         return "-"
     duration.short_description = "Duration"
 
-    def log_preview(self, obj):
-        """Truncated log for list view."""
-        log = obj.error_message or ''
-        if '--- RESULT ---' in log:
-            result = log.split('--- RESULT ---')[-1].strip()
-            return result[:100]
-        return log[-80:] if log else '-'
-    log_preview.short_description = "Log"
+    def _parse_log_section(self, log, section):
+        """Extract a section from structured log."""
+        marker = f"--- {section} ---"
+        if marker not in log:
+            return ''
+        rest = log.split(marker, 1)[1]
+        # Find next section marker
+        next_marker = rest.find('\n--- ')
+        if next_marker > 0:
+            return rest[:next_marker].strip()
+        return rest.strip()
 
-    def log_display(self, obj):
-        """Full log output as formatted HTML."""
-        log = obj.error_message or 'No log output'
+    def summary_preview(self, obj):
+        """Summary line for list view."""
+        log = obj.error_message or ''
+        summary = self._parse_log_section(log, 'SUMMARY')
+        if summary:
+            return summary[:120]
+        # Fallback for old format
+        if '--- RESULT ---' in log:
+            return log.split('--- RESULT ---')[-1].strip()[:120]
+        return '-'
+    summary_preview.short_description = "Summary"
+
+    def summary_display(self, obj):
+        """Summary section in detail view."""
+        log = obj.error_message or ''
+        summary = self._parse_log_section(log, 'SUMMARY')
+        if not summary:
+            summary = 'No summary available'
+        return format_html(
+            '<div style="font-size:14px; padding:8px; background:#1a2e1a; '
+            'color:#a0d0a0; border-radius:8px;">{}</div>',
+            summary
+        )
+    summary_display.short_description = "Summary"
+
+    def raw_log_display(self, obj):
+        """Full raw log output (birdmarks + pipeline) as formatted HTML."""
+        log = obj.error_message or ''
+        birdmarks = self._parse_log_section(log, 'BIRDMARKS OUTPUT')
+        pipeline = self._parse_log_section(log, 'PIPELINE LOG')
+        # Fallback for old format
+        if not birdmarks and not pipeline:
+            full_log = log
+        else:
+            full_log = ''
+            if birdmarks:
+                full_log += f"=== Birdmarks Output ===\n{birdmarks}\n\n"
+            if pipeline:
+                full_log += f"=== Pipeline Log ===\n{pipeline}"
+        if not full_log.strip():
+            full_log = 'No raw logs available'
         return format_html(
             '<pre style="background:#1a1a2e; color:#e0e0e0; padding:12px; '
-            'border-radius:8px; max-height:500px; overflow:auto; '
+            'border-radius:8px; max-height:600px; overflow:auto; '
             'font-family:monospace; font-size:12px; white-space:pre-wrap; '
             'word-break:break-word;">{}</pre>',
-            log
+            full_log
         )
-    log_display.short_description = "Log Output"
+    raw_log_display.short_description = "Raw Logs"
 
     def mark_failed_as_pending(self, request, queryset):
         """Reset failed jobs to pending for retry."""
@@ -187,6 +232,22 @@ class BookmarkSyncJobAdmin(admin.ModelAdmin):
         )
         self.message_user(request, f'Reset {count} failed jobs to pending')
     mark_failed_as_pending.short_description = "Reset failed jobs to pending"
+
+    def view_raw_logs(self, request, queryset):
+        """View raw logs for selected job(s) in a new page."""
+        from django.http import HttpResponse
+        logs = []
+        for job in queryset.order_by('-id')[:5]:
+            log = job.error_message or 'No logs'
+            logs.append(f"{'='*60}\nJob #{job.id} | {job.status} | {job.completed_at}\n{'='*60}\n{log}\n")
+        return HttpResponse(
+            '<html><body style="background:#1a1a2e; color:#e0e0e0; font-family:monospace; '
+            'padding:20px; font-size:13px;"><pre>' +
+            '\n'.join(logs).replace('<', '&lt;').replace('>', '&gt;') +
+            '</pre></body></html>',
+            content_type='text/html'
+        )
+    view_raw_logs.short_description = "View raw logs"
 
     def cancel_pending_jobs(self, request, queryset):
         """Cancel pending jobs."""

@@ -553,9 +553,13 @@ def execute_bookmark_sync(sync_job_id: int):
         stderr = result.stderr
         logger.info(f"Binary returned: exit_code={result.returncode}, stdout_len={len(stdout)}, stderr_len={len(stderr)}")
 
-        # Store birdmarks output as job log (visible in admin)
-        job.error_message = (stderr or stdout or '')[:4000]
-        job.save()
+        # Capture pipeline logs into a string buffer
+        import io
+        log_buffer = io.StringIO()
+        log_handler = logging.StreamHandler(log_buffer)
+        log_handler.setLevel(logging.DEBUG)
+        log_handler.setFormatter(logging.Formatter('%(levelname)s %(message)s'))
+        logger.addHandler(log_handler)
 
         # --- Post-fetch pipeline: always runs all steps ---
         # Step 1: Import new tweets to DB (skips duplicates)
@@ -596,9 +600,11 @@ def execute_bookmark_sync(sync_job_id: int):
         except Exception as regen_error:
             logger.error(f"Static site regeneration failed: {regen_error}")
 
+        # Stop capturing pipeline logs
+        logger.removeHandler(log_handler)
+        pipeline_logs = log_buffer.getvalue()
+
         # --- Determine success/failure ---
-        # Success if: birdmarks connected (md files exist OR exit code 0)
-        # This handles rate-limited partial fetches as success
         has_cache_data = len(md_files) > 0
         error_text = (stderr or '') + (stdout or '')
 
@@ -620,10 +626,7 @@ def execute_bookmark_sync(sync_job_id: int):
                 f"{media_copied} media copied, {categorized} categorized"
             )
             logger.info(f"{summary} for {profile.twitter_username}")
-            # Append summary to job log (birdmarks output already saved)
-            job.error_message = (job.error_message or '') + f"\n\n--- RESULT ---\n{summary}"
         else:
-            # True failure: birdmarks couldn't connect at all
             error_type = 'unknown'
             if 'auth_token' in error_text or 'ct0' in error_text or 'Cookies file not found' in error_text:
                 error_type = 'cookie_expired'
@@ -635,15 +638,23 @@ def execute_bookmark_sync(sync_job_id: int):
                 error_type = 'fetch_error'
 
             job.status = 'failed'
-            job.error_message = (stderr or stdout or '')[:1000]
             job.error_type = error_type
             job.completed_at = timezone.now()
 
             schedule.consecutive_failures += 1
             schedule.last_error_type = error_type
 
-            logger.error(f"Bookmark sync failed for {profile.twitter_username}: {error_type}")
+            summary = f"FAILED: {error_type}"
 
+        # Build structured log: summary + birdmarks output + pipeline logs
+        job.error_message = (
+            f"--- SUMMARY ---\n{summary}\n\n"
+            f"--- BIRDMARKS OUTPUT ---\n{(stderr or stdout or '')[:4000]}\n\n"
+            f"--- PIPELINE LOG ---\n{pipeline_logs[:4000]}"
+        )
+
+        if job.status == 'failed':
+            logger.error(f"Bookmark sync failed for {profile.twitter_username}: {error_type}")
             profile.sync_status = 'error'
             profile.sync_error_message = f"{error_type}: {(stderr or stdout or '')[:200]}"
 
