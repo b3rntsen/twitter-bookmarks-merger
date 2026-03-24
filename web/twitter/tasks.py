@@ -517,6 +517,11 @@ def execute_bookmark_sync(sync_job_id: int):
 
         if schedule.use_until_synced:
             cmd.append("--rebuild")
+            # Clear stale cursor so rebuild always starts from page 1 (newest)
+            state_file = output_dir / "exporter-state.json"
+            if state_file.exists():
+                state_file.unlink()
+                logger.info("Cleared birdmarks state file for fresh rebuild")
         else:
             cmd.extend(["--max-pages", str(schedule.max_pages)])
 

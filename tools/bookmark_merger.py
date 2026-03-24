@@ -1163,17 +1163,29 @@ HTML_BASE = """<!DOCTYPE html>
             word-break: break-word;
         }}
         .article-card {{
-            display: flex;
-            gap: 12px;
-            padding: 12px;
             margin-bottom: 15px;
             border: 1px solid #2f3336;
             border-radius: 12px;
             background: #16181c;
+            overflow: hidden;
+        }}
+        .article-header {{
+            display: flex;
+            gap: 12px;
+            padding: 12px;
+            cursor: pointer;
+            align-items: flex-start;
+        }}
+        .article-header:hover {{
+            background: #1e2028;
         }}
         .article-icon {{
             font-size: 24px;
             flex-shrink: 0;
+        }}
+        .article-meta {{
+            flex: 1;
+            min-width: 0;
         }}
         .article-title {{
             font-weight: 600;
@@ -1183,6 +1195,41 @@ HTML_BASE = """<!DOCTYPE html>
             color: #71767b;
             font-size: 0.9em;
             line-height: 1.4;
+        }}
+        .article-toggle {{
+            color: #71767b;
+            flex-shrink: 0;
+            font-size: 12px;
+        }}
+        .article-body {{
+            padding: 0 20px 20px;
+            border-top: 1px solid #2f3336;
+            line-height: 1.7;
+            font-size: 0.95em;
+            max-width: 680px;
+        }}
+        .article-body h3 {{
+            margin-top: 1.5em;
+            margin-bottom: 0.5em;
+        }}
+        .article-body p {{
+            margin-bottom: 1em;
+        }}
+        .article-body a {{
+            color: #1d9bf0;
+        }}
+        .article-body hr {{
+            border: none;
+            border-top: 1px solid #2f3336;
+            margin: 1.5em 0;
+        }}
+        .article-body li {{
+            margin-left: 20px;
+            margin-bottom: 0.5em;
+        }}
+        .embedded-ref {{
+            color: #71767b;
+            font-style: italic;
         }}
         .tweet-media {{
             margin-bottom: 15px;
@@ -2009,13 +2056,74 @@ def build_category_timeline(bookmarks: list[dict], categories_data: dict) -> dic
     }
 
 
+def _markdown_to_html(md_text: str) -> str:
+    """Convert simple markdown to HTML for article display."""
+    lines = md_text.split("\n")
+    html_parts = []
+    in_paragraph = False
+
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            if in_paragraph:
+                html_parts.append("</p>")
+                in_paragraph = False
+            continue
+
+        # Headers
+        if stripped.startswith("## "):
+            if in_paragraph:
+                html_parts.append("</p>")
+                in_paragraph = False
+            html_parts.append(f"<h3>{stripped[3:]}</h3>")
+        elif stripped.startswith("### "):
+            if in_paragraph:
+                html_parts.append("</p>")
+                in_paragraph = False
+            html_parts.append(f"<h4>{stripped[4:]}</h4>")
+        elif stripped.startswith("---"):
+            if in_paragraph:
+                html_parts.append("</p>")
+                in_paragraph = False
+            html_parts.append("<hr>")
+        elif stripped.startswith("- "):
+            if in_paragraph:
+                html_parts.append("</p>")
+                in_paragraph = False
+            html_parts.append(f"<li>{stripped[2:]}</li>")
+        elif stripped.startswith("[Embedded Tweet:"):
+            # Embedded tweet reference → link
+            url_match = re.search(r'https?://[^\]]+', stripped)
+            if url_match:
+                url = url_match.group(0)
+                if in_paragraph:
+                    html_parts.append("</p>")
+                    in_paragraph = False
+                html_parts.append(f'<p class="embedded-ref"><a href="{url}" target="_blank">View embedded tweet</a></p>')
+        else:
+            # Convert inline markdown: **bold**, [text](url)
+            text = stripped
+            text = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', text)
+            text = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', r'<a href="\2" target="_blank">\1</a>', text)
+            if not in_paragraph:
+                html_parts.append(f"<p>{text}")
+                in_paragraph = True
+            else:
+                html_parts.append(f" {text}")
+
+    if in_paragraph:
+        html_parts.append("</p>")
+
+    return "\n".join(html_parts)
+
+
 def build_articles_index(cache_dir: Path = None) -> dict:
     """Build index mapping tweet_id → article metadata from birdmarks cache.
 
     Scans markdown files for [Read full article](articles/filename.md) links,
-    reads the article file to extract title and excerpt.
+    reads the article file to extract title, excerpt, author, and full body HTML.
 
-    Returns: {tweet_id: {title, excerpt, filename}}
+    Returns: {tweet_id: {title, excerpt, author, body_html, filename}}
     """
     if cache_dir is None:
         cache_dir = BIRDMARKS_CACHE_DIR
@@ -2044,26 +2152,44 @@ def build_articles_index(cache_dir: Path = None) -> dict:
             if not article_path.exists():
                 continue
 
-            # Read article to get title and excerpt
+            # Read and parse article
             article_content = article_path.read_text(encoding="utf-8")
-            lines = [l.strip() for l in article_content.split("\n") if l.strip()]
+            lines = article_content.split("\n")
 
             title = ""
+            author = ""
             excerpt = ""
-            for line in lines:
-                if line.startswith("# ") and not title:
-                    title = line[2:].strip()
-                elif not line.startswith("#") and not line.startswith("**@") and not line.startswith("---") and len(line) > 20:
-                    if not excerpt:
-                        excerpt = line[:300]
+            body_start = 0
+
+            # Parse header: title, author/date, then body
+            for i, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith("# ") and not title:
+                    title = stripped[2:].strip()
+                elif stripped.startswith("**@") and not author:
+                    # Author byline: **@username** (Display Name)
+                    author = stripped
+                elif stripped == title and title:
+                    # Skip repeated title line
+                    continue
+                elif not stripped.startswith("#") and not stripped.startswith("**@") and not stripped.startswith("---") and len(stripped) > 30:
+                    # First real content paragraph = start of body
+                    body_start = i
+                    excerpt = stripped[:300]
+                    break
 
             if not title:
-                # Use filename as fallback title
                 title = filename.replace(".md", "").replace("-", " ")
+
+            # Extract body (everything from first real paragraph onward)
+            body_md = "\n".join(lines[body_start:]).strip()
+            body_html = _markdown_to_html(body_md)
 
             index[tweet_id] = {
                 "title": title,
                 "excerpt": excerpt[:200] + ("..." if len(excerpt) > 200 else ""),
+                "author": author,
+                "body_html": body_html,
                 "filename": filename,
             }
         except Exception:
@@ -4656,9 +4782,24 @@ def generate_html_server(output_dir: Path, bookmarks: list[dict], categories_dat
     articles_index = build_articles_index()
     if articles_index:
         print(f"  Found {len(articles_index)} tweets with articles")
+        # Save article bodies as separate JSON files (avoid bloating tweet chunks)
+        articles_data_dir = data_dir / "articles"
+        articles_data_dir.mkdir(exist_ok=True)
+        for tid, article in articles_index.items():
+            with open(articles_data_dir / f"{tid}.json", "w", encoding="utf-8") as f:
+                json.dump({"title": article["title"], "author": article.get("author", ""),
+                           "body_html": article.get("body_html", "")}, f, ensure_ascii=False)
+
+    # Strip body_html from articles_index for tweet chunks (body loaded on demand)
+    articles_summary = {}
+    for tid, article in (articles_index or {}).items():
+        articles_summary[tid] = {
+            "title": article["title"],
+            "excerpt": article["excerpt"],
+        }
 
     tweets_json = generate_tweets_json(sorted_bookmarks, categories_data, media_mode="server",
-                                       articles_index=articles_index)
+                                       articles_index=articles_summary if articles_summary else None)
 
     # Split into chunks of 100 tweets each for lazy loading
     CHUNK_SIZE = 100
@@ -4926,15 +5067,46 @@ function filterTweets(query) {{
     }}
 }}
 
-function renderArticleCard(article) {{
+function renderArticleCard(article, tweetId) {{
     if (!article) return '';
-    return `<div class="article-card">
-        <div class="article-icon">&#128196;</div>
-        <div class="article-content">
-            <div class="article-title">${{escapeHtml(article.title)}}</div>
-            ${{article.excerpt ? `<div class="article-excerpt">${{escapeHtml(article.excerpt)}}</div>` : ''}}
+    return `<div class="article-card" id="article-${{tweetId}}">
+        <div class="article-header" onclick="toggleArticle('${{tweetId}}')">
+            <div class="article-icon">&#128196;</div>
+            <div class="article-meta">
+                <div class="article-title">${{escapeHtml(article.title)}}</div>
+                ${{article.excerpt ? `<div class="article-excerpt">${{escapeHtml(article.excerpt)}}</div>` : ''}}
+            </div>
+            <div class="article-toggle">&#9660;</div>
         </div>
+        <div class="article-body" id="article-body-${{tweetId}}" style="display:none;"></div>
     </div>`;
+}}
+
+async function toggleArticle(tweetId) {{
+    const body = document.getElementById(`article-body-${{tweetId}}`);
+    const card = document.getElementById(`article-${{tweetId}}`);
+    const toggle = card.querySelector('.article-toggle');
+    if (body.style.display === 'none') {{
+        // Load body if not yet loaded
+        if (!body.innerHTML) {{
+            try {{
+                const resp = await fetch(`/data/articles/${{tweetId}}.json`);
+                if (resp.ok) {{
+                    const data = await resp.json();
+                    body.innerHTML = data.body_html || '<p>Article content not available</p>';
+                }} else {{
+                    body.innerHTML = '<p>Article content not available</p>';
+                }}
+            }} catch(e) {{
+                body.innerHTML = '<p>Failed to load article</p>';
+            }}
+        }}
+        body.style.display = 'block';
+        toggle.innerHTML = '&#9650;';
+    }} else {{
+        body.style.display = 'none';
+        toggle.innerHTML = '&#9660;';
+    }}
 }}
 
 function renderTweetCard(tweet) {{
@@ -4946,7 +5118,7 @@ function renderTweetCard(tweet) {{
     ).join(' ');
 
     const mediaHtml = renderMedia(tweet.media, tweet.tweet_url);
-    const articleHtml = renderArticleCard(tweet.article);
+    const articleHtml = renderArticleCard(tweet.article, tweet.id);
 
     card.innerHTML = `
         <div class="tweet-header">

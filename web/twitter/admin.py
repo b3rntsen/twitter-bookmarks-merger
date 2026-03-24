@@ -106,14 +106,16 @@ class BookmarkSyncJobAdmin(admin.ModelAdmin):
         'status_display',
         'bookmarks_fetched',
         'duration',
-        'error_type'
+        'error_type',
+        'log_preview',
     ]
     list_filter = ['status', 'error_type', 'scheduled_at']
     search_fields = ['twitter_profile__twitter_username', 'error_message']
     readonly_fields = [
         'scheduled_at', 'started_at', 'completed_at',
-        'bookmarks_fetched', 'pages_fetched', 'error_message', 'error_type'
+        'bookmarks_fetched', 'pages_fetched', 'error_type', 'log_display'
     ]
+    exclude = ['error_message']  # replaced by log_display
     actions = ['mark_failed_as_pending', 'cancel_pending_jobs']
 
     fieldsets = (
@@ -124,11 +126,10 @@ class BookmarkSyncJobAdmin(admin.ModelAdmin):
             'fields': ('started_at', 'completed_at')
         }),
         ('Results', {
-            'fields': ('bookmarks_fetched', 'pages_fetched')
+            'fields': ('bookmarks_fetched', 'pages_fetched', 'error_type')
         }),
-        ('Error Details', {
-            'fields': ('error_type', 'error_message'),
-            'classes': ('collapse',)
+        ('Log Output', {
+            'fields': ('log_display',),
         }),
     )
 
@@ -152,6 +153,27 @@ class BookmarkSyncJobAdmin(admin.ModelAdmin):
             return f"{delta.total_seconds():.1f}s"
         return "-"
     duration.short_description = "Duration"
+
+    def log_preview(self, obj):
+        """Truncated log for list view."""
+        log = obj.error_message or ''
+        if '--- RESULT ---' in log:
+            result = log.split('--- RESULT ---')[-1].strip()
+            return result[:100]
+        return log[-80:] if log else '-'
+    log_preview.short_description = "Log"
+
+    def log_display(self, obj):
+        """Full log output as formatted HTML."""
+        log = obj.error_message or 'No log output'
+        return format_html(
+            '<pre style="background:#1a1a2e; color:#e0e0e0; padding:12px; '
+            'border-radius:8px; max-height:500px; overflow:auto; '
+            'font-family:monospace; font-size:12px; white-space:pre-wrap; '
+            'word-break:break-word;">{}</pre>',
+            log
+        )
+    log_display.short_description = "Log Output"
 
     def mark_failed_as_pending(self, request, queryset):
         """Reset failed jobs to pending for retry."""
