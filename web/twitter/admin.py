@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.http import JsonResponse
+from django.urls import path
 from django.utils.html import format_html
 from .models import TwitterProfile, Tweet, TweetThread, TweetMedia, TweetReply, BookmarkSyncSchedule, BookmarkSyncJob
 
@@ -106,7 +108,7 @@ class BookmarkSyncJobAdmin(admin.ModelAdmin):
         'status_display',
         'bookmarks_fetched',
         'duration',
-        'summary_preview',
+        'summary_link',
     ]
     list_filter = ['status', 'error_type', 'scheduled_at']
     search_fields = ['twitter_profile__twitter_username', 'error_message']
@@ -116,7 +118,7 @@ class BookmarkSyncJobAdmin(admin.ModelAdmin):
         'summary_display', 'raw_log_display'
     ]
     exclude = ['error_message']
-    actions = ['mark_failed_as_pending', 'cancel_pending_jobs', 'view_raw_logs']
+    actions = ['mark_failed_as_pending', 'cancel_pending_jobs']
 
     fieldsets = (
         ('Job Info', {
@@ -134,8 +136,69 @@ class BookmarkSyncJobAdmin(admin.ModelAdmin):
         ('Raw Logs', {
             'fields': ('raw_log_display',),
             'classes': ('collapse',),
+            'description': 'Tip: search by tweet ID in the list view to find which job processed it.',
         }),
     )
+
+    def get_urls(self):
+        """Add per-job log URL."""
+        custom = [
+            path('<int:job_id>/logs/',
+                 self.admin_site.admin_view(self.job_logs_view),
+                 name='twitter_bookmarksyncjob_logs'),
+        ]
+        return custom + super().get_urls()
+
+    def job_logs_view(self, request, job_id):
+        """Return structured log as JSON (for modal) or HTML (for direct view)."""
+        try:
+            job = BookmarkSyncJob.objects.get(id=job_id)
+        except BookmarkSyncJob.DoesNotExist:
+            return JsonResponse({'error': 'Job not found'}, status=404)
+
+        log = job.error_message or ''
+        summary = self._parse_section(log, 'SUMMARY')
+        birdmarks = self._parse_section(log, 'BIRDMARKS OUTPUT')
+        pipeline = self._parse_section(log, 'PIPELINE LOG')
+
+        if request.headers.get('Accept') == 'application/json':
+            return JsonResponse({
+                'id': job.id, 'status': job.status,
+                'completed_at': str(job.completed_at),
+                'summary': summary, 'birdmarks': birdmarks, 'pipeline': pipeline,
+            })
+
+        # HTML page (linkable, also used as modal content via fetch)
+        import html
+        return JsonResponse({
+            'html': (
+                f'<div style="font-family:monospace;font-size:13px;color:#e0e0e0;">'
+                f'<h3 style="color:#a0d0a0;">Job #{job.id} | {job.status} | {job.completed_at}</h3>'
+                f'<h4 style="color:#71767b;">Summary</h4>'
+                f'<div style="background:#1a2e1a;color:#a0d0a0;padding:8px;border-radius:8px;">'
+                f'{html.escape(summary or "No summary")}</div>'
+                f'<h4 style="color:#71767b;margin-top:16px;">Birdmarks Output</h4>'
+                f'<pre style="background:#1a1a2e;padding:12px;border-radius:8px;'
+                f'max-height:400px;overflow:auto;white-space:pre-wrap;word-break:break-word;">'
+                f'{html.escape(birdmarks or "No output")}</pre>'
+                f'<h4 style="color:#71767b;margin-top:16px;">Pipeline Log</h4>'
+                f'<pre style="background:#1a1a2e;padding:12px;border-radius:8px;'
+                f'max-height:300px;overflow:auto;white-space:pre-wrap;word-break:break-word;">'
+                f'{html.escape(pipeline or "No pipeline log")}</pre>'
+                f'</div>'
+            )
+        })
+
+    def _parse_section(self, log, section):
+        """Extract a section from structured log."""
+        marker = f"--- {section} ---"
+        if marker not in log:
+            return ''
+        rest = log.split(marker, 1)[1]
+        next_marker = rest.find('\n--- ')
+        if next_marker > 0:
+            return rest[:next_marker].strip()
+        return rest.strip()
 
     def status_display(self, obj):
         colors = {
@@ -158,34 +221,51 @@ class BookmarkSyncJobAdmin(admin.ModelAdmin):
         return "-"
     duration.short_description = "Duration"
 
-    def _parse_log_section(self, log, section):
-        """Extract a section from structured log."""
-        marker = f"--- {section} ---"
-        if marker not in log:
-            return ''
-        rest = log.split(marker, 1)[1]
-        # Find next section marker
-        next_marker = rest.find('\n--- ')
-        if next_marker > 0:
-            return rest[:next_marker].strip()
-        return rest.strip()
-
-    def summary_preview(self, obj):
-        """Summary line for list view."""
+    def summary_link(self, obj):
+        """Summary with clickable link to open logs modal."""
         log = obj.error_message or ''
-        summary = self._parse_log_section(log, 'SUMMARY')
-        if summary:
-            return summary[:120]
-        # Fallback for old format
-        if '--- RESULT ---' in log:
-            return log.split('--- RESULT ---')[-1].strip()[:120]
-        return '-'
-    summary_preview.short_description = "Summary"
+        summary = self._parse_section(log, 'SUMMARY')
+        if not summary:
+            if '--- RESULT ---' in log:
+                summary = log.split('--- RESULT ---')[-1].strip()[:120]
+            else:
+                summary = '-'
+        return format_html(
+            '<a href="#" onclick="openLogModal({}); return false;" '
+            'title="Click to view full logs">{}</a>'
+            '<script>'
+            'if (!window._logModalInit) {{'
+            '  window._logModalInit = true;'
+            '  const d = document.createElement("dialog");'
+            '  d.id = "log-modal";'
+            '  d.style.cssText = "background:#16181c;color:#e0e0e0;border:1px solid #2f3336;'
+            'border-radius:12px;max-width:800px;width:90%;max-height:80vh;padding:20px;";'
+            '  d.innerHTML = \'<div id="log-modal-content"></div>'
+            '<button onclick="this.closest(\\\'dialog\\\').close()" '
+            'style="position:sticky;bottom:0;margin-top:16px;padding:8px 24px;'
+            'background:#2f3336;color:#e0e0e0;border:none;border-radius:8px;cursor:pointer;">'
+            'Close</button>\';'
+            '  document.body.appendChild(d);'
+            '  d.addEventListener("click", e => {{ if(e.target===d) d.close(); }});'
+            '}}'
+            'function openLogModal(jobId) {{'
+            '  fetch("/admin/twitter/bookmarksyncjob/" + jobId + "/logs/")'
+            '  .then(r => r.json())'
+            '  .then(data => {{'
+            '    document.getElementById("log-modal-content").innerHTML = data.html;'
+            '    document.getElementById("log-modal").showModal();'
+            '    history.replaceState(null, "", "/admin/twitter/bookmarksyncjob/" + jobId + "/logs/");'
+            '  }});'
+            '}}'
+            '</script>',
+            obj.id, summary[:120]
+        )
+    summary_link.short_description = "Summary"
 
     def summary_display(self, obj):
         """Summary section in detail view."""
         log = obj.error_message or ''
-        summary = self._parse_log_section(log, 'SUMMARY')
+        summary = self._parse_section(log, 'SUMMARY')
         if not summary:
             summary = 'No summary available'
         return format_html(
@@ -196,11 +276,10 @@ class BookmarkSyncJobAdmin(admin.ModelAdmin):
     summary_display.short_description = "Summary"
 
     def raw_log_display(self, obj):
-        """Full raw log output (birdmarks + pipeline) as formatted HTML."""
+        """Full raw log in detail view."""
         log = obj.error_message or ''
-        birdmarks = self._parse_log_section(log, 'BIRDMARKS OUTPUT')
-        pipeline = self._parse_log_section(log, 'PIPELINE LOG')
-        # Fallback for old format
+        birdmarks = self._parse_section(log, 'BIRDMARKS OUTPUT')
+        pipeline = self._parse_section(log, 'PIPELINE LOG')
         if not birdmarks and not pipeline:
             full_log = log
         else:
@@ -232,22 +311,6 @@ class BookmarkSyncJobAdmin(admin.ModelAdmin):
         )
         self.message_user(request, f'Reset {count} failed jobs to pending')
     mark_failed_as_pending.short_description = "Reset failed jobs to pending"
-
-    def view_raw_logs(self, request, queryset):
-        """View raw logs for selected job(s) in a new page."""
-        from django.http import HttpResponse
-        logs = []
-        for job in queryset.order_by('-id')[:5]:
-            log = job.error_message or 'No logs'
-            logs.append(f"{'='*60}\nJob #{job.id} | {job.status} | {job.completed_at}\n{'='*60}\n{log}\n")
-        return HttpResponse(
-            '<html><body style="background:#1a1a2e; color:#e0e0e0; font-family:monospace; '
-            'padding:20px; font-size:13px;"><pre>' +
-            '\n'.join(logs).replace('<', '&lt;').replace('>', '&gt;') +
-            '</pre></body></html>',
-            content_type='text/html'
-        )
-    view_raw_logs.short_description = "View raw logs"
 
     def cancel_pending_jobs(self, request, queryset):
         """Cancel pending jobs."""

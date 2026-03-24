@@ -1836,7 +1836,11 @@ def generate_tweets_json(bookmarks: list[dict], categories_data: dict | None,
         try:
             dt = datetime.strptime(date_str, "%a %b %d %H:%M:%S %z %Y")
             date_iso = dt.isoformat()
-            date_display = dt.strftime("%b %d, %Y at %H:%M")
+            # Skip "at 00:00" for birdmarks-imported tweets that only have date
+            if dt.hour == 0 and dt.minute == 0 and dt.second == 0:
+                date_display = dt.strftime("%b %d, %Y")
+            else:
+                date_display = dt.strftime("%b %d, %Y at %H:%M")
         except ValueError:
             pass
 

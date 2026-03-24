@@ -561,6 +561,19 @@ def execute_bookmark_sync(sync_job_id: int):
         log_handler.setFormatter(logging.Formatter('%(levelname)s %(message)s'))
         logger.addHandler(log_handler)
 
+        # Parse birdmarks output for exported/skipped counts
+        birdmarks_output = stderr or stdout or ''
+        birdmarks_exported = 0
+        birdmarks_skipped = 0
+        for line in birdmarks_output.split('\n'):
+            # Lines like: "--- Page 1 complete | Total: 3 exported, 17 skipped, 0 errors ---"
+            if 'exported' in line and 'skipped' in line:
+                import re as _re
+                m = _re.search(r'(\d+) exported.*?(\d+) skipped', line)
+                if m:
+                    birdmarks_exported = int(m.group(1))
+                    birdmarks_skipped = int(m.group(2))
+
         # --- Post-fetch pipeline: always runs all steps ---
         # Step 1: Import new tweets to DB (skips duplicates)
         md_files = list(output_dir.glob("*.md")) if output_dir.exists() else []
@@ -622,8 +635,9 @@ def execute_bookmark_sync(sync_job_id: int):
             profile.sync_error_message = ''
 
             summary = (
-                f"Sync OK: {bookmarks_count} new tweets, "
-                f"{media_copied} media copied, {categorized} categorized"
+                f"Sync OK: {birdmarks_exported} found by birdmarks "
+                f"({bookmarks_count} new to DB, {birdmarks_skipped} known), "
+                f"{media_copied} media, {categorized} categorized"
             )
             logger.info(f"{summary} for {profile.twitter_username}")
         else:
@@ -649,7 +663,7 @@ def execute_bookmark_sync(sync_job_id: int):
         # Build structured log: summary + birdmarks output + pipeline logs
         job.error_message = (
             f"--- SUMMARY ---\n{summary}\n\n"
-            f"--- BIRDMARKS OUTPUT ---\n{(stderr or stdout or '')[:4000]}\n\n"
+            f"--- BIRDMARKS OUTPUT ---\n{(stderr or stdout or '')[:8000]}\n\n"
             f"--- PIPELINE LOG ---\n{pipeline_logs[:4000]}"
         )
 
