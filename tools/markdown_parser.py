@@ -103,6 +103,59 @@ def extract_media_filenames(body: str) -> list[str]:
     return re.findall(pattern, body)
 
 
+def parse_thread_tweets(body: str) -> list[dict]:
+    """Parse a thread markdown body into individual tweet segments.
+
+    Each segment has 'text' (cleaned) and 'media' (list of asset filenames).
+    The first segment is the bookmarked tweet; subsequent ones are thread replies.
+
+    Returns:
+        list of dicts: [{"text": str, "media": [str, ...]}, ...]
+    """
+    # Strip the header (# Thread, author line, date, View on Twitter link)
+    lines = body.split('\n')
+    content_lines = []
+    skip_header = True
+    for line in lines:
+        if skip_header:
+            if line.startswith('# ') or line.startswith('**@') or re.match(r'^\d{4}-\d{2}-\d{2}$', line.strip()):
+                continue
+            if '[View on Twitter]' in line or line.strip() == '':
+                continue
+            skip_header = False
+        content_lines.append(line)
+
+    content = '\n'.join(content_lines)
+
+    # Split by --- separators (thread tweet boundaries)
+    segments = re.split(r'\n---\n', content)
+
+    tweets = []
+    for segment in segments:
+        segment = segment.strip()
+        if not segment:
+            continue
+
+        # Extract media from this segment
+        media = re.findall(r'!\[\]\(assets/([^)]+)\)', segment)
+
+        # Extract text (remove media embeds, clean markdown)
+        text_lines = []
+        for line in segment.split('\n'):
+            if line.startswith('!['):
+                continue
+            text_lines.append(line)
+        text = '\n'.join(text_lines).strip()
+        # Clean markdown links and formatting
+        text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+        text = re.sub(r'\*+([^*]+)\*+', r'\1', text)
+
+        if text or media:
+            tweets.append({"text": text, "media": media})
+
+    return tweets
+
+
 def classify_media_type(filename: str) -> str:
     """Classify a media file as 'video' or 'photo'/'image' based on extension.
 

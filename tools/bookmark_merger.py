@@ -1329,6 +1329,38 @@ HTML_BASE = """<!DOCTYPE html>
             padding-top: 10px;
             border-top: 1px solid var(--border);
         }}
+        .thread-badge {{
+            display: inline-block;
+            background: rgba(29, 155, 240, 0.1);
+            color: var(--link);
+            padding: 4px 12px;
+            border-radius: 16px;
+            font-size: 0.85em;
+            margin-bottom: 10px;
+            text-decoration: none;
+        }}
+        .thread-badge:hover {{
+            background: rgba(29, 155, 240, 0.2);
+            text-decoration: none;
+        }}
+        .thread-tweet {{
+            border-left: 3px solid var(--link);
+            padding: 12px 15px;
+            margin-bottom: 12px;
+        }}
+        .thread-tweet-number {{
+            color: var(--secondary);
+            font-size: 0.8em;
+            margin-bottom: 6px;
+        }}
+        .thread-tweet-text {{
+            white-space: pre-wrap;
+            word-break: break-word;
+            margin-bottom: 10px;
+        }}
+        .thread-tweet .tweet-media {{
+            margin-bottom: 0;
+        }}
         .category-tag {{
             display: inline-block;
             background: var(--link);
@@ -1816,11 +1848,13 @@ def render_media_html_cdn(bookmark: dict) -> str:
 
 def generate_tweets_json(bookmarks: list[dict], categories_data: dict | None,
                          media_mode: str = "local",
-                         articles_index: dict | None = None) -> list[dict]:
+                         articles_index: dict | None = None,
+                         thread_index: dict | None = None) -> list[dict]:
     """Generate JSON data for tweets, suitable for infinite scroll.
 
     media_mode: "local" (relative paths), "server" (absolute /media/bookmarks/), "cdn" (Twitter CDN)
     articles_index: {tweet_id: {title, excerpt, filename}} from build_articles_index()
+    thread_index: {tweet_id: [{"text", "media"}, ...]} from build_thread_index()
     """
     tweets_data = []
 
@@ -1903,6 +1937,20 @@ def generate_tweets_json(bookmarks: list[dict], categories_data: dict | None,
         if articles_index and tweet_id in articles_index:
             article = articles_index[tweet_id]
 
+        # Determine thread length
+        thread_len = 1
+        if thread_index and tweet_id in thread_index:
+            thread_len = len(thread_index[tweet_id])
+        elif bookmark.get("Thread Length", 1) and bookmark.get("Thread Length", 1) > 1:
+            thread_len = bookmark["Thread Length"]
+
+        # For threads, limit media on chronological page to first image only
+        card_media = media
+        if thread_len > 1 and len(media) > 1:
+            # Keep only the first image for the card
+            first_image = next((m for m in media if m["type"] == "image"), None)
+            card_media = [first_image] if first_image else media[:1]
+
         tweet_data = {
             "id": tweet_id,
             "author": f"@{bookmark.get('User Screen Name', 'unknown')}",
@@ -1911,13 +1959,15 @@ def generate_tweets_json(bookmarks: list[dict], categories_data: dict | None,
             "text": bookmark.get("Full Text", ""),
             "date": date_iso,
             "date_display": date_display,
-            "media": media,
+            "media": card_media,
             "categories": categories,
             "likes": bookmark.get("Favorite Count", 0),
             "retweets": bookmark.get("Retweet Count", 0),
             "replies": bookmark.get("Reply Count", 0),
             "tweet_url": f"https://x.com/{bookmark.get('User Screen Name', 'unknown')}/status/{tweet_id}"
         }
+        if thread_len > 1:
+            tweet_data["thread_length"] = thread_len
         if article:
             tweet_data["article"] = article
         tweets_data.append(tweet_data)
@@ -1960,7 +2010,8 @@ def render_quoted_tweet_html(bookmark: dict, quoted_tweets_cache: dict | None) -
 
 def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
                       include_detail_link: bool = True, use_cdn: bool = False,
-                      use_server: bool = False, quoted_tweets: dict | None = None) -> str:
+                      use_server: bool = False, quoted_tweets: dict | None = None,
+                      suppress_media: bool = False) -> str:
     """Render a tweet card HTML.
 
     Media rendering modes:
@@ -1975,6 +2026,7 @@ def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
         use_cdn: Use Twitter CDN for media
         use_server: Use server paths for media
         quoted_tweets: Cache of quoted tweets from master/quoted_tweets.json
+        suppress_media: If True, don't render media (used for thread detail pages)
     """
     tweet_id = bookmark.get("Tweet Id", "")
 
@@ -2000,7 +2052,9 @@ def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
     detail_link = f' | <a href="../tweets/{tweet_id}.html">Details</a>' if include_detail_link else ""
 
     # Select media rendering mode
-    if use_cdn:
+    if suppress_media:
+        media_html = ""
+    elif use_cdn:
         media_html = render_media_html_cdn(bookmark)
     elif use_server:
         media_html = render_media_html_server(tweet_id, MASTER_MEDIA_DIR)
@@ -2196,6 +2250,42 @@ def build_articles_index(cache_dir: Path = None) -> dict:
                 "body_html": body_html,
                 "filename": filename,
             }
+        except Exception:
+            continue
+
+    return index
+
+
+def build_thread_index(cache_dir: Path = None) -> dict:
+    """Build index mapping tweet_id → thread tweets from birdmarks cache.
+
+    Only includes threads (thread_length > 1). Each entry has a list of
+    tweet segments with text and media filenames.
+
+    Returns: {tweet_id: [{"text": str, "media": [str, ...]}, ...]}
+    """
+    sys.path.insert(0, str(Path(__file__).parent))
+    from markdown_parser import parse_frontmatter, parse_thread_tweets
+
+    if cache_dir is None:
+        cache_dir = BIRDMARKS_CACHE_DIR
+
+    if not cache_dir.exists():
+        return {}
+
+    index = {}
+    for md_file in cache_dir.glob("*.md"):
+        try:
+            content = md_file.read_text(encoding="utf-8")
+            fm, body = parse_frontmatter(content)
+            tweet_id = str(fm.get("id", ""))
+            thread_length = fm.get("thread_length", 1)
+            if not tweet_id or not isinstance(thread_length, int) or thread_length <= 1:
+                continue
+
+            tweets = parse_thread_tweets(body)
+            if len(tweets) > 1:
+                index[tweet_id] = tweets
         except Exception:
             continue
 
@@ -2955,6 +3045,22 @@ def cmd_generate(args: argparse.Namespace) -> None:
     # Build search index
     search_index = build_search_index(bookmarks)
 
+    # Build thread index from birdmarks cache
+    print("Building thread index...")
+    thread_index = build_thread_index()
+    if thread_index:
+        print(f"  Found {len(thread_index)} threads")
+
+    # Build author-to-tweets index for detail pages
+    author_tweets = defaultdict(list)
+    for b in bookmarks:
+        sn = b.get("User Screen Name", "")
+        if sn:
+            author_tweets[sn].append(b)
+    # Sort each author's tweets by date (newest first)
+    for sn in author_tweets:
+        author_tweets[sn].sort(key=lambda b: b.get("Created At", ""), reverse=True)
+
     # Generate individual tweet pages
     print(f"Generating {len(bookmarks)} tweet pages...")
     for bookmark in bookmarks:
@@ -2962,11 +3068,132 @@ def cmd_generate(args: argparse.Namespace) -> None:
         if not tweet_id:
             continue
 
-        tweet_html = render_tweet_card(bookmark, categories_data, include_detail_link=False, quoted_tweets=quoted_tweets)
-        content = f"<h1>Tweet by @{bookmark.get('User Screen Name', 'unknown')}</h1>{tweet_html}"
+        screen_name = bookmark.get("User Screen Name", "unknown")
+        is_thread = thread_index and tweet_id in thread_index and len(thread_index[tweet_id]) > 1
+        tweet_html = render_tweet_card(bookmark, categories_data, include_detail_link=False,
+                                       quoted_tweets=quoted_tweets, suppress_media=is_thread)
+
+        # Build detail sections
+        detail_sections = []
+
+        # Thread section - render full thread from birdmarks cache
+        thread_tweets = thread_index.get(tweet_id, []) if thread_index else []
+        if len(thread_tweets) > 1:
+            thread_parts = [f'<div class="detail-section"><h2>🧵 Full Thread ({len(thread_tweets)} tweets)</h2>']
+            for i, tt in enumerate(thread_tweets):
+                thread_parts.append(f'<div class="thread-tweet">')
+                thread_parts.append(f'<div class="thread-tweet-number">{i + 1}/{len(thread_tweets)}</div>')
+                if tt["text"]:
+                    thread_parts.append(f'<div class="thread-tweet-text">{tt["text"]}</div>')
+                if tt["media"]:
+                    thread_parts.append('<div class="tweet-media">')
+                    for media_filename in tt["media"]:
+                        media_path = MASTER_MEDIA_DIR / tweet_id / media_filename
+                        if media_path.exists():
+                            rel = f"../../media/{tweet_id}/{media_filename}"
+                            ext = Path(media_filename).suffix.lower()
+                            if ext in [".mp4", ".webm", ".mov"]:
+                                thumb = MASTER_MEDIA_DIR / tweet_id / f"thumb_{Path(media_filename).stem}.jpg"
+                                if thumb.exists():
+                                    thread_parts.append(f'<video src="{rel}" poster="../../media/{tweet_id}/thumb_{Path(media_filename).stem}.jpg" controls preload="none"></video>')
+                                else:
+                                    thread_parts.append(f'<video src="{rel}" controls preload="metadata"></video>')
+                            else:
+                                thread_parts.append(f'<img src="{rel}" alt="Thread media" loading="lazy">')
+                    thread_parts.append('</div>')
+                thread_parts.append('</div>')
+            thread_parts.append('</div>')
+            detail_sections.append(''.join(thread_parts))
+
+        # Author info section
+        user_desc = bookmark.get("User Description", "")
+        user_location = bookmark.get("User Location", "")
+        user_followers = bookmark.get("User Followers Count", "")
+        user_verified = bookmark.get("User Is Blue Verified", "")
+        if user_desc or user_location or user_followers:
+            author_info_parts = []
+            if user_desc:
+                author_info_parts.append(f'<p>{user_desc}</p>')
+            meta_parts = []
+            if user_location:
+                meta_parts.append(f'📍 {user_location}')
+            if user_followers:
+                meta_parts.append(f'{user_followers} followers')
+            if user_verified:
+                meta_parts.append('✓ Verified')
+            if meta_parts:
+                author_info_parts.append(f'<p class="meta">{" · ".join(meta_parts)}</p>')
+            # Link to author page if it exists
+            author_info_parts.append(f'<p><a href="../authors/{screen_name}.html">All bookmarks by @{screen_name}</a></p>')
+            detail_sections.append(f'<div class="detail-section"><h2>About @{screen_name}</h2>{"".join(author_info_parts)}</div>')
+
+        # Categories section with descriptions
+        if categories_data:
+            tweet_cats = categories_data.get("tweet_categories", {}).get(tweet_id, [])
+            if tweet_cats:
+                cat_parts = []
+                for cat_id in tweet_cats:
+                    cat_info = categories_data.get("categories", {}).get(cat_id, {})
+                    cat_name = cat_info.get("name", cat_id)
+                    cat_desc = cat_info.get("description", "")
+                    cat_parts.append(
+                        f'<div class="detail-category">'
+                        f'<a href="../categories/{cat_id}.html" class="category-tag">{cat_name}</a>'
+                        f'{f" — {cat_desc}" if cat_desc else ""}'
+                        f'</div>'
+                    )
+                detail_sections.append(f'<div class="detail-section"><h2>Categories</h2>{"".join(cat_parts)}</div>')
+
+        # Scraped at / bookmarked info
+        scraped_at = bookmark.get("Scraped At", "")
+        if scraped_at:
+            try:
+                scraped_dt = datetime.fromisoformat(scraped_at)
+                scraped_formatted = scraped_dt.strftime("%b %d, %Y at %H:%M")
+            except (ValueError, TypeError):
+                scraped_formatted = scraped_at
+            detail_sections.append(f'<div class="detail-section"><h2>Bookmark Info</h2><p class="meta">Bookmarked: {scraped_formatted}</p></div>')
+
+        # Other tweets by this author
+        other_tweets = [b for b in author_tweets.get(screen_name, []) if b.get("Tweet Id") != tweet_id]
+        if other_tweets:
+            other_items = []
+            for other in other_tweets[:10]:
+                other_id = other.get("Tweet Id", "")
+                other_text = other.get("Full Text", "")[:120]
+                if len(other.get("Full Text", "")) > 120:
+                    other_text += "..."
+                other_date = other.get("Created At", "")
+                try:
+                    other_dt = datetime.strptime(other_date, "%a %b %d %H:%M:%S %z %Y")
+                    other_formatted = other_dt.strftime("%b %d, %Y")
+                except ValueError:
+                    other_formatted = other_date
+                other_items.append(
+                    f'<div class="other-tweet">'
+                    f'<a href="{other_id}.html">{other_text}</a>'
+                    f'<span class="meta"> — {other_formatted}</span>'
+                    f'</div>'
+                )
+            more_text = f'<p><a href="../authors/{screen_name}.html">View all {len(other_tweets)} bookmarks by @{screen_name}</a></p>' if len(other_tweets) > 10 else ""
+            detail_sections.append(f'<div class="detail-section"><h2>More by @{screen_name} ({len(other_tweets)})</h2>{"".join(other_items)}{more_text}</div>')
+
+        detail_html = "".join(detail_sections)
+
+        content = f"""<h1>Tweet by @{screen_name}</h1>
+{tweet_html}
+<style>
+.detail-section {{ margin-top: 20px; padding: 15px; background: var(--card-bg); border-radius: 12px; }}
+.detail-section h2 {{ font-size: 1.1em; margin-bottom: 10px; }}
+.detail-category {{ margin-bottom: 8px; }}
+.other-tweet {{ padding: 8px 0; border-bottom: 1px solid var(--border); }}
+.other-tweet:last-child {{ border-bottom: none; }}
+.other-tweet a {{ display: inline; }}
+</style>
+{detail_html}"""
 
         page_html = HTML_BASE.format(
-            title=f"Tweet by @{bookmark.get('User Screen Name', 'unknown')}",
+            title=f"Tweet by @{screen_name}",
             content=content
         )
 
@@ -2980,7 +3207,8 @@ def cmd_generate(args: argparse.Namespace) -> None:
     data_dir = MASTER_HTML_DIR / "data"
     data_dir.mkdir(exist_ok=True)
 
-    tweets_json = generate_tweets_json(bookmarks, categories_data, media_mode="local")
+    tweets_json = generate_tweets_json(bookmarks, categories_data, media_mode="local",
+                                       thread_index=thread_index)
 
     # Split into chunks of 100 tweets each
     CHUNK_SIZE = 100
@@ -3256,6 +3484,9 @@ function renderTweetCard(tweet) {{
     ).join(' ');
 
     const mediaHtml = renderMedia(tweet.media, tweet.tweet_url);
+    const threadBadge = tweet.thread_length > 1
+        ? `<a href="tweets/${{tweet.id}}.html" class="thread-badge">🧵 Thread (${{tweet.thread_length}} tweets)</a>`
+        : '';
 
     card.innerHTML = `
         <div class="tweet-header">
@@ -3267,6 +3498,7 @@ function renderTweetCard(tweet) {{
                 </div>
             </div>
         </div>
+        ${{threadBadge}}
         <div class="tweet-text">${{escapeHtml(tweet.text)}}</div>
         ${{mediaHtml}}
         ${{categoriesHtml ? `<div class="tweet-categories">${{categoriesHtml}}</div>` : ''}}
@@ -4770,6 +5002,11 @@ def generate_html_server(output_dir: Path, bookmarks: list[dict], categories_dat
 
     tweet_lookup = {b["Tweet Id"]: b for b in bookmarks}
 
+    # Build thread index
+    thread_index = build_thread_index()
+    if thread_index:
+        print(f"  Found {len(thread_index)} threads")
+
     # Generate main index (chronological) with infinite scroll
     print("Generating main index with infinite scroll...")
 
@@ -4803,7 +5040,8 @@ def generate_html_server(output_dir: Path, bookmarks: list[dict], categories_dat
         }
 
     tweets_json = generate_tweets_json(sorted_bookmarks, categories_data, media_mode="server",
-                                       articles_index=articles_summary if articles_summary else None)
+                                       articles_index=articles_summary if articles_summary else None,
+                                       thread_index=thread_index)
 
     # Split into chunks of 100 tweets each for lazy loading
     CHUNK_SIZE = 100
@@ -5123,6 +5361,9 @@ function renderTweetCard(tweet) {{
 
     const mediaHtml = renderMedia(tweet.media, tweet.tweet_url);
     const articleHtml = renderArticleCard(tweet.article, tweet.id);
+    const threadBadge = tweet.thread_length > 1
+        ? `<a href="/tweets/${{tweet.id}}.html" class="thread-badge">🧵 Thread (${{tweet.thread_length}} tweets)</a>`
+        : '';
 
     card.innerHTML = `
         <div class="tweet-header">
@@ -5134,6 +5375,7 @@ function renderTweetCard(tweet) {{
                 </div>
             </div>
         </div>
+        ${{threadBadge}}
         <div class="tweet-text">${{escapeHtml(tweet.text)}}</div>
         ${{articleHtml}}
         ${{mediaHtml}}
@@ -5435,6 +5677,32 @@ function applyFilters() {{
 
             with open(html_file, "w", encoding="utf-8") as f:
                 f.write(content)
+
+    # Copy tweet detail pages from master (already generated with correct structure)
+    src_tweets = MASTER_HTML_DIR / "tweets"
+    if src_tweets.exists():
+        print("Copying tweet detail pages...")
+        import shutil as sh
+        dst_tweets = html_dir / "tweets"
+        if dst_tweets.exists():
+            sh.rmtree(dst_tweets)
+        sh.copytree(src_tweets, dst_tweets)
+
+        # Fix paths in tweet detail files
+        for html_file in dst_tweets.glob("*.html"):
+            with open(html_file, "r", encoding="utf-8") as f:
+                content = f.read()
+
+            content = fix_paths_for_server(content)
+            content = add_admin_link(content)
+            # Fix media paths (../../media/ from tweets/ subdirectory)
+            content = content.replace('../../media/', '/media/bookmarks/')
+            content = content.replace('../media/', '/media/bookmarks/')
+
+            with open(html_file, "w", encoding="utf-8") as f:
+                f.write(content)
+
+        print(f"  Copied {len(list(dst_tweets.glob('*.html')))} tweet pages")
 
     print(f"Generated server HTML in {html_dir}")
 

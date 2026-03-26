@@ -16,7 +16,7 @@ from pathlib import Path
 
 # Import shared markdown parsing (same directory)
 sys.path.insert(0, str(Path(__file__).parent))
-from markdown_parser import parse_frontmatter, extract_tweet_text, extract_media_filenames, classify_media_type
+from markdown_parser import parse_frontmatter, extract_tweet_text, extract_media_filenames, classify_media_type, parse_thread_tweets
 
 SECRETS_FILE = Path.home() / ".openclaw" / "secrets" / "twitter-cookies.json"
 BIRDMARKS_DIR = Path(__file__).parent.parent / "birdmarks"  # Project root / birdmarks
@@ -183,6 +183,7 @@ def convert_bookmark(md_file: Path) -> dict:
         "Favorite Count": "",
         "Media URLs": ", ".join(media_urls) if media_urls else "",
         "Media Types": ", ".join(media_types) if media_types else "",
+        "Thread Length": int(frontmatter.get("thread_length", 1)),
     }
 
 
