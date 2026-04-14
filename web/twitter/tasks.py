@@ -774,6 +774,23 @@ def schedule_next_bookmark_sync(twitter_profile_id: int):
                           error_message='Cancelled: superseded by newer scheduled job')
             logger.info(f"Cancelled {orphan_count} orphan pending job(s) for {profile.twitter_username}")
 
+        # Recover stuck running jobs for this profile (>30 min = presumed worker crash)
+        stale_cutoff = now - timedelta(minutes=30)
+        stuck_running = BookmarkSyncJob.objects.filter(
+            twitter_profile=profile,
+            status='running',
+            started_at__lt=stale_cutoff
+        )
+        stuck_count = stuck_running.count()
+        if stuck_count:
+            stuck_running.update(
+                status='failed',
+                error_type='stale_job',
+                error_message='Automatically recovered: stuck in running >30 min (likely worker crash)',
+                completed_at=timezone.now()
+            )
+            logger.warning(f"Recovered {stuck_count} stuck running job(s) for {profile.twitter_username}")
+
         # Create pending job
         job = BookmarkSyncJob.objects.create(
             twitter_profile=profile,

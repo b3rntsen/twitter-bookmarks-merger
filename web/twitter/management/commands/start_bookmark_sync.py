@@ -1,6 +1,7 @@
+from datetime import timedelta
 from django.core.management.base import BaseCommand
 from django.utils import timezone
-from twitter.models import TwitterProfile, BookmarkSyncSchedule
+from twitter.models import TwitterProfile, BookmarkSyncSchedule, BookmarkSyncJob
 from twitter.tasks import schedule_next_bookmark_sync
 
 
@@ -31,6 +32,26 @@ class Command(BaseCommand):
                 )
             )
             return
+
+        # Recover any jobs stuck in 'running' state (likely from worker crash/restart)
+        stale_cutoff = timezone.now() - timedelta(minutes=30)
+        stuck_running = BookmarkSyncJob.objects.filter(
+            status='running',
+            started_at__lt=stale_cutoff
+        )
+        stuck_count = stuck_running.count()
+        if stuck_count:
+            stuck_running.update(
+                status='failed',
+                error_type='stale_job',
+                error_message='Automatically recovered on startup: stuck in running >30 min',
+                completed_at=timezone.now()
+            )
+            self.stdout.write(
+                self.style.WARNING(
+                    f'Recovered {stuck_count} stuck running job(s) from previous container lifecycle'
+                )
+            )
 
         for profile in profiles:
             # Create or update sync schedule
