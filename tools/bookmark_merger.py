@@ -1277,7 +1277,7 @@ HTML_BASE = """<!DOCTYPE html>
             font-size: 0.9em;
             line-height: 1.4;
             display: -webkit-box;
-            -webkit-line-clamp: 2;
+            -webkit-line-clamp: 4;
             -webkit-box-orient: vertical;
             overflow: hidden;
         }}
@@ -1352,6 +1352,22 @@ HTML_BASE = """<!DOCTYPE html>
         .article-body li {{
             margin-left: 20px;
             margin-bottom: 0.5em;
+        }}
+        .article-body figure {{
+            margin: 1.2em 0;
+        }}
+        .article-body figure img,
+        .article-body img {{
+            width: 100%;
+            height: auto;
+            border-radius: 8px;
+            display: block;
+        }}
+        .article-body figcaption {{
+            margin-top: 6px;
+            color: #71767b;
+            font-size: 0.85em;
+            text-align: center;
         }}
         .embedded-ref {{
             color: #71767b;
@@ -1950,13 +1966,22 @@ def load_articles_cache(refresh: bool = False) -> dict:
     return _ARTICLES_CACHE
 
 
-def render_article_link_card(article_url: str, article_data: dict | None = None) -> str:
+def render_article_link_card(article_url: str, article_data: dict | None = None,
+                             local_href: str | None = None) -> str:
     """Render an article card.
 
     If article_data has title/excerpt/image, render the enriched card (image header,
     title, excerpt). Otherwise, fall back to the plain link card.
+
+    If `local_href` is provided, the card links to it (same-tab) instead of the X
+    article URL — used so feeds and cross-references navigate to the local source
+    tweet detail page.
     """
-    href = html_lib.escape(article_url, quote=True)
+    x_href = html_lib.escape(article_url, quote=True)
+    if local_href:
+        link_attrs = f'href="{html_lib.escape(local_href, quote=True)}"'
+    else:
+        link_attrs = f'href="{x_href}" target="_blank" rel="noopener"'
 
     if article_data and (article_data.get("title") or article_data.get("image") or article_data.get("excerpt")):
         image = (article_data.get("image") or "").strip()
@@ -1974,7 +1999,7 @@ def render_article_link_card(article_url: str, article_data: dict | None = None)
         )
         return (
             '<div class="article-card article-link-card article-rich">'
-            f'<a class="article-rich-link" href="{href}" target="_blank" rel="noopener">'
+            f'<a class="article-rich-link" {link_attrs}>'
             f'{image_html}'
             '<div class="article-rich-body">'
             '<div class="article-source">&#128196; Article on X</div>'
@@ -1987,7 +2012,7 @@ def render_article_link_card(article_url: str, article_data: dict | None = None)
 
     return (
         '<div class="article-card article-link-card">'
-        f'<a class="article-header" href="{href}" target="_blank" rel="noopener">'
+        f'<a class="article-header" {link_attrs}>'
         '<div class="article-icon">&#128196;</div>'
         '<div class="article-meta">'
         '<div class="article-title">Read article on X</div>'
@@ -2020,11 +2045,20 @@ def render_article_full_card(article_url: str, article_data: dict | None = None,
         if image else ""
     )
     byline_html = f'<div class="article-byline">{html_lib.escape(byline)}</div>' if byline else ""
-    body_part = (
-        f'<div class="article-body">{body_html}</div>' if body_html
-        else f'<div class="article-body"><p><em>Article content is not yet cached. '
-             f'<a href="{href}" target="_blank" rel="noopener">Read on X &rarr;</a></em></p></div>'
-    )
+    excerpt = ((article_data or {}).get("excerpt") or "").strip() if article_data else ""
+    if body_html:
+        body_part = f'<div class="article-body">{body_html}</div>'
+    elif excerpt:
+        body_part = (
+            f'<div class="article-body"><p>{html_lib.escape(excerpt)}</p>'
+            f'<p><em>Full article not yet cached. '
+            f'<a href="{href}" target="_blank" rel="noopener">Read on X &rarr;</a></em></p></div>'
+        )
+    else:
+        body_part = (
+            f'<div class="article-body"><p><em>Article content is not yet cached. '
+            f'<a href="{href}" target="_blank" rel="noopener">Read on X &rarr;</a></em></p></div>'
+        )
 
     return (
         '<div class="article-card article-full">'
@@ -2042,13 +2076,21 @@ def render_article_full_card(article_url: str, article_data: dict | None = None,
     )
 
 
-def process_tweet_text(text: str, articles_cache: dict | None = None) -> tuple[str, str]:
+def process_tweet_text(text: str, articles_cache: dict | None = None,
+                       expand_article: bool = False,
+                       local_href_prefix: str = "../tweets/") -> tuple[str, str]:
     """Split tweet text into (visible_text_html, article_card_html).
 
     If the text contains an x.com/i/article/<id> URL, strip it from the visible
     text and render it as an article card. If articles_cache has enriched metadata
     for that article id, the card shows title/image/excerpt; otherwise it's a
     plain link card. Both outputs are HTML-safe.
+
+    If `expand_article` is True and the cached article has body_html, render the
+    full inline-body variant (used on the source tweet's detail page) instead of
+    the teaser link card. Otherwise the link card retargets to the source
+    tweet's local detail page (`{local_href_prefix}{tweet_id}.html`) so clicks
+    open the local view rather than X.
     """
     if not text:
         return "", ""
@@ -2059,7 +2101,15 @@ def process_tweet_text(text: str, articles_cache: dict | None = None) -> tuple[s
     article_id = match.group(1)
     remaining = (text[:match.start()] + text[match.end():]).strip()
     article_data = (articles_cache or {}).get(article_id)
-    return html_lib.escape(remaining), render_article_link_card(article_url, article_data)
+    if expand_article and article_data and (article_data.get("body_html") or article_data.get("excerpt")):
+        body_html = article_data.get("body_html")
+        return html_lib.escape(remaining), render_article_full_card(article_url, article_data, body_html)
+
+    local_href = None
+    source_tid = (article_data or {}).get("tweet_id")
+    if source_tid:
+        local_href = f"{local_href_prefix}{source_tid}.html"
+    return html_lib.escape(remaining), render_article_link_card(article_url, article_data, local_href)
 
 
 TWEET_TEMPLATE = """
@@ -2463,7 +2513,8 @@ def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
 
     if articles_cache is None:
         articles_cache = load_articles_cache()
-    text_html, article_html = process_tweet_text(bookmark.get("Full Text", ""), articles_cache)
+    text_html, article_html = process_tweet_text(bookmark.get("Full Text", ""), articles_cache,
+                                                  expand_article=full_text)
 
     return TWEET_TEMPLATE.format(
         tweet_id=tweet_id,
@@ -3995,8 +4046,11 @@ function filterTweets(query) {{
     }}
 }}
 
-function renderArticleLinkCard(articleUrl, articleData) {{
+function renderArticleLinkCard(articleUrl, articleData, localHref) {{
     if (!articleUrl) return '';
+    const linkAttrs = localHref
+        ? `href="${{escapeHtml(localHref)}}"`
+        : `href="${{escapeHtml(articleUrl)}}" target="_blank" rel="noopener"`;
     if (articleData && (articleData.title || articleData.image || articleData.excerpt)) {{
         const image = articleData.image || '';
         const title = articleData.title || 'Article on X';
@@ -4008,7 +4062,7 @@ function renderArticleLinkCard(articleUrl, articleData) {{
             ? `<div class="article-excerpt">${{escapeHtml(excerpt)}}</div>`
             : '';
         return `<div class="article-card article-link-card article-rich">
-            <a class="article-rich-link" href="${{escapeHtml(articleUrl)}}" target="_blank" rel="noopener">
+            <a class="article-rich-link" ${{linkAttrs}}>
                 ${{imageHtml}}
                 <div class="article-rich-body">
                     <div class="article-source">&#128196; Article on X</div>
@@ -4019,7 +4073,7 @@ function renderArticleLinkCard(articleUrl, articleData) {{
         </div>`;
     }}
     return `<div class="article-card article-link-card">
-        <a class="article-header" href="${{escapeHtml(articleUrl)}}" target="_blank" rel="noopener">
+        <a class="article-header" ${{linkAttrs}}>
             <div class="article-icon">&#128196;</div>
             <div class="article-meta">
                 <div class="article-title">Read article on X</div>
@@ -4041,7 +4095,7 @@ function renderTweetCard(tweet) {{
     ).join(' ');
 
     const mediaHtml = renderMedia(tweet.media, tweet.tweet_url);
-    const articleHtml = renderArticleLinkCard(tweet.article_url, tweet.article);
+    const articleHtml = renderArticleLinkCard(tweet.article_url, tweet.article, `tweets/${{tweet.id}}.html`);
     const threadBadge = tweet.thread_length > 1
         ? `<a href="tweets/${{tweet.id}}.html" class="thread-badge">🧵 Thread (${{tweet.thread_length}} tweets)</a>`
         : '';
@@ -5969,8 +6023,11 @@ function renderArticleCard(article, tweetId) {{
     </div>`;
 }}
 
-function renderArticleLinkCard(articleUrl, articleData) {{
+function renderArticleLinkCard(articleUrl, articleData, localHref) {{
     if (!articleUrl) return '';
+    const linkAttrs = localHref
+        ? `href="${{escapeHtml(localHref)}}"`
+        : `href="${{escapeHtml(articleUrl)}}" target="_blank" rel="noopener"`;
     if (articleData && (articleData.title || articleData.image || articleData.excerpt)) {{
         const image = articleData.image || '';
         const title = articleData.title || 'Article on X';
@@ -5982,7 +6039,7 @@ function renderArticleLinkCard(articleUrl, articleData) {{
             ? `<div class="article-excerpt">${{escapeHtml(excerpt)}}</div>`
             : '';
         return `<div class="article-card article-link-card article-rich">
-            <a class="article-rich-link" href="${{escapeHtml(articleUrl)}}" target="_blank" rel="noopener">
+            <a class="article-rich-link" ${{linkAttrs}}>
                 ${{imageHtml}}
                 <div class="article-rich-body">
                     <div class="article-source">&#128196; Article on X</div>
@@ -5993,7 +6050,7 @@ function renderArticleLinkCard(articleUrl, articleData) {{
         </div>`;
     }}
     return `<div class="article-card article-link-card">
-        <a class="article-header" href="${{escapeHtml(articleUrl)}}" target="_blank" rel="noopener">
+        <a class="article-header" ${{linkAttrs}}>
             <div class="article-icon">&#128196;</div>
             <div class="article-meta">
                 <div class="article-title">Read article on X</div>
@@ -6044,7 +6101,7 @@ function renderTweetCard(tweet) {{
     const mediaHtml = renderMedia(tweet.media, tweet.tweet_url);
     const articleHtml = tweet.article
         ? renderArticleCard(tweet.article, tweet.id)
-        : renderArticleLinkCard(tweet.article_url, tweet.article_og);
+        : renderArticleLinkCard(tweet.article_url, tweet.article_og, `/tweets/${{tweet.id}}.html`);
     const threadBadge = tweet.thread_length > 1
         ? `<a href="/tweets/${{tweet.id}}.html" class="thread-badge">🧵 Thread (${{tweet.thread_length}} tweets)</a>`
         : '';
@@ -6619,6 +6676,278 @@ def _load_twitter_cookies_from_db() -> Optional[dict]:
         return None
 
 
+def _load_twitter_cookies_from_env() -> Optional[dict]:
+    """Load auth_token + ct0 from os.environ (populated from .env at module load)."""
+    auth = (os.environ.get("TWITTER_AUTH_TOKEN") or "").strip()
+    ct0 = (os.environ.get("TWITTER_CT0") or "").strip()
+    if auth and ct0:
+        return {"auth_token": auth, "ct0": ct0}
+    return None
+
+
+def _load_twitter_cookies() -> Optional[dict]:
+    """Load Twitter auth cookies. Tries Django DB first (in container), falls back to .env (local)."""
+    return _load_twitter_cookies_from_db() or _load_twitter_cookies_from_env()
+
+
+def _extract_initial_state(html: str) -> Optional[dict]:
+    """Pull the JSON object that follows `__INITIAL_STATE__ = ` from an X SPA bootstrap page."""
+    marker = html.find("__INITIAL_STATE__")
+    if marker == -1:
+        return None
+    eq = html.find("=", marker)
+    brace = html.find("{", eq)
+    if brace == -1:
+        return None
+    depth = 0
+    in_str = False
+    esc = False
+    i = brace
+    n = len(html)
+    while i < n:
+        c = html[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+        else:
+            if c == '"':
+                in_str = True
+            elif c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+        i += 1
+    raw = html[brace : i + 1]
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+
+_ARTICLE_PAGE_TIMEOUT_MS = 30000
+_ARTICLE_HYDRATION_TIMEOUT_MS = 25000
+
+
+def _twitter_auth_cookie_objs(cookies: dict) -> list:
+    """Build Playwright cookie objects for both x.com and twitter.com domains."""
+    auth = cookies.get("auth_token", "")
+    ct0 = cookies.get("ct0", "")
+    objs = []
+    for domain in (".x.com", ".twitter.com"):
+        objs.append({"name": "auth_token", "value": auth, "domain": domain, "path": "/", "httpOnly": True, "secure": True, "sameSite": "None"})
+        objs.append({"name": "ct0", "value": ct0, "domain": domain, "path": "/", "httpOnly": False, "secure": True, "sameSite": "Lax"})
+    return objs
+
+
+def _convert_article_block(block, soup) -> Optional[str]:
+    """Convert a single Draft.js block (paragraph div or embed section) to clean HTML.
+
+    Returns an HTML string for one block, or None to skip.
+    """
+    if block.name == "section":
+        # Embed: video or image. Take the first poster/img we can find.
+        video = block.find("video")
+        img = block.find("img")
+        src = None
+        if video and video.get("poster"):
+            src = video.get("poster")
+        elif img and img.get("src"):
+            src = img.get("src")
+        if not src:
+            return None
+        new_img = soup.new_tag("img", src=src, alt="")
+        figure = soup.new_tag("figure")
+        figure.append(new_img)
+        return str(figure)
+
+    if block.name not in ("div", "p"):
+        return None
+
+    # Block-level wrapper. Walk descendants and emit a clean <p> with preserved
+    # links and inline emphasis. Drop empty paragraphs.
+    out = soup.new_tag("p")
+
+    def walk(el, parent):
+        for c in el.children:
+            if isinstance(c, str):
+                if c.strip() or c == " ":
+                    parent.append(c)
+                continue
+            if c.name == "a" and c.get("href"):
+                a = soup.new_tag("a", href=c.get("href"))
+                a["target"] = "_blank"
+                a["rel"] = "noopener noreferrer"
+                a.string = c.get_text()
+                parent.append(a)
+                continue
+            if c.name == "br":
+                parent.append(soup.new_tag("br"))
+                continue
+            # Bold/italic detection via Draft.js style classes — best effort.
+            cls = " ".join(c.get("class", [])) if hasattr(c, "get") else ""
+            wrapper = parent
+            if "r-b88u0q" in cls or "r-1cwl3u0" in cls:
+                strong = soup.new_tag("strong")
+                parent.append(strong)
+                wrapper = strong
+            elif "r-fdjqy7" in cls or "r-utggzx" in cls:
+                em = soup.new_tag("em")
+                parent.append(em)
+                wrapper = em
+            walk(c, wrapper)
+
+    walk(block, out)
+    text = out.get_text(strip=True)
+    if not text:
+        return None
+    return str(out)
+
+
+def _parse_article_body_html(rendered_html: str) -> Optional[dict]:
+    """Parse the Playwright-rendered article HTML into {title, body_html, cover_url}.
+
+    Returns None if the page didn't contain the expected article testids
+    (e.g. paywalled stub, deleted article, or auth failure).
+    """
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        return None
+    soup = BeautifulSoup(rendered_html, "html.parser")
+
+    title_el = soup.select_one('[data-testid="twitter-article-title"]')
+    contents = soup.select_one('[data-testid="longformRichTextComponent"] [data-contents]')
+    if not contents:
+        return None
+
+    out_html = []
+    for block in contents.find_all(recursive=False):
+        chunk = _convert_article_block(block, soup)
+        if chunk:
+            out_html.append(chunk)
+    body_html = "\n".join(out_html).strip()
+    if not body_html:
+        return None
+
+    # Cover image: first <img> inside the read view that isn't a tiny avatar/icon.
+    cover_url = None
+    read_view = soup.select_one('[data-testid="twitterArticleReadView"]')
+    if read_view:
+        for img in read_view.find_all("img"):
+            src = img.get("src", "")
+            if src.startswith("https://pbs.twimg.com/") and "media" in src:
+                cover_url = src
+                break
+
+    return {
+        "title": title_el.get_text(strip=True) if title_el else None,
+        "body_html": body_html,
+        "cover_url": cover_url,
+    }
+
+
+def fetch_x_article_body_via_browser(article_id: str, cookies: dict, debug: bool = False,
+                                      page=None) -> Optional[dict]:
+    """Render the X article SPA in Playwright with auth cookies, return parsed article.
+
+    Returns {title, body_html, cover_url} on success, None on any failure.
+
+    If `page` is provided (existing Playwright Page), it's reused for batch backfills.
+    Otherwise a one-off browser is launched for a single fetch.
+    """
+    try:
+        from playwright.sync_api import sync_playwright, TimeoutError as PWTimeoutError
+    except ImportError:
+        if debug:
+            print("  playwright not installed")
+        return None
+
+    auth = cookies.get("auth_token", "")
+    ct0 = cookies.get("ct0", "")
+    if not (auth and ct0):
+        return None
+
+    url = f"https://x.com/i/article/{article_id}"
+
+    def _drive(p):
+        try:
+            p.goto(url, wait_until="domcontentloaded", timeout=_ARTICLE_PAGE_TIMEOUT_MS)
+            p.wait_for_selector('[data-testid="longformRichTextComponent"]',
+                                timeout=_ARTICLE_HYDRATION_TIMEOUT_MS)
+            p.wait_for_timeout(800)
+            html = p.content()
+        except PWTimeoutError:
+            if debug:
+                snap = MASTER_DIR / f"_probe_article_{article_id}_rendered.html"
+                snap.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    snap.write_text(p.content(), encoding="utf-8")
+                    print(f"  hydration timed out — partial DOM saved: {snap}")
+                except Exception:
+                    pass
+            return None
+        if debug:
+            snap = MASTER_DIR / f"_probe_article_{article_id}_rendered.html"
+            snap.parent.mkdir(parents=True, exist_ok=True)
+            snap.write_text(html, encoding="utf-8")
+            print(f"  rendered HTML saved: {snap}")
+        return _parse_article_body_html(html)
+
+    if page is not None:
+        return _drive(page)
+
+    try:
+        with sync_playwright() as pw:
+            browser = pw.chromium.launch(headless=True)
+            try:
+                context = browser.new_context(
+                    user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                               "(KHTML, like Gecko) Chrome/121.0 Safari/537.36",
+                    viewport={"width": 1280, "height": 1600},
+                )
+                context.add_cookies(_twitter_auth_cookie_objs(cookies))
+                page_local = context.new_page()
+                return _drive(page_local)
+            finally:
+                browser.close()
+    except Exception as e:
+        if debug:
+            print(f"  playwright error: {e}")
+        return None
+
+
+def probe_article_body(article_id: str) -> int:
+    """One-off discovery: fetch one article body and dump parsed result to stdout."""
+    cookies = _load_twitter_cookies()
+    if not cookies:
+        print("ERROR: no Twitter cookies found (need TWITTER_AUTH_TOKEN + TWITTER_CT0 in .env or DB)")
+        return 1
+    print(f"Probing article {article_id} with auth cookies...")
+    parsed = fetch_x_article_body_via_browser(article_id, cookies, debug=True)
+    if not parsed:
+        print("ERROR: could not parse article body (page may have returned a stub or been deleted)")
+        return 2
+
+    print(f"\nTitle: {parsed.get('title')!r}")
+    print(f"Cover: {parsed.get('cover_url')!r}")
+    body_html = parsed.get("body_html") or ""
+    print(f"body_html: {len(body_html)} chars")
+    print(f"  preview: {body_html[:600]!r}")
+
+    out_path = MASTER_DIR / f"_probe_article_{article_id}.json"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(parsed, f, indent=2, ensure_ascii=False)
+    print(f"\nParsed JSON saved: {out_path}")
+    return 0
+
+
 def cmd_fetch_articles(args: argparse.Namespace) -> None:
     """Fetch X article metadata (title, excerpt, image) for bookmarks whose text is an article URL.
 
@@ -6630,6 +6959,11 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
     switching to a new fetcher implementation).
     """
     import time
+
+    probe_body_id = getattr(args, "probe_body", None)
+    if probe_body_id:
+        probe_article_body(probe_body_id)
+        return
 
     print("=== Fetching X articles ===")
 
@@ -6652,59 +6986,127 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
         print(f"--retry-failed: clearing {len(cache['failed'])} failed entries to retry")
         cache["failed"] = {}
 
-    # Build (article_id, tweet_id) pairs — pick any one bookmark per article
+    # Build (article_id, tweet_id) pairs — pick any one bookmark per article.
+    # Includes both new articles (not in cache) and cached articles missing body_html
+    # (so a Playwright-equipped run will backfill bodies on existing entries).
     pairs: list[tuple[str, str]] = []
     seen_aids: set[str] = set()
+    body_backfill_count = 0
     for b in bookmarks:
         m = ARTICLE_URL_PATTERN.search(b.get("Full Text", "") or "")
         if not m:
             continue
         aid = m.group(1)
-        if aid in cache["fetched"] or aid in cache["failed"]:
+        if aid in cache["failed"] or aid in seen_aids:
             continue
-        if aid in seen_aids:
+        cached = cache["fetched"].get(aid)
+        if cached and cached.get("body_html"):
             continue
         tid = str(b.get("Tweet Id") or "").strip()
         if not tid:
             continue
         seen_aids.add(aid)
         pairs.append((aid, tid))
+        if cached:
+            body_backfill_count += 1
 
     print(f"Cached: {len(cache['fetched'])} fetched, {len(cache['failed'])} failed")
-    print(f"To fetch: {len(pairs)}")
+    print(f"To fetch/enrich: {len(pairs)} ({body_backfill_count} body backfill, {len(pairs)-body_backfill_count} new)")
     if getattr(args, "max", 0):
         pairs = pairs[: args.max]
         print(f"Limiting this run to {len(pairs)} articles (--max)")
     if not pairs:
         return
 
-    fetched = failed = 0
-    for i, (aid, tid) in enumerate(pairs):
-        print(f"  {i+1}/{len(pairs)}: article {aid} (tweet {tid})")
-        result = fetch_x_article(tid)
-        if result:
-            # Store the article_url the card links to, plus all fetched fields
-            result["article_url"] = f"https://x.com/i/article/{aid}"
+    cookies = _load_twitter_cookies()
+    body_browser_ctx = None
+    body_browser_page = None
+    body_browser_pw = None
+    body_browser = None
+    if cookies:
+        try:
+            from playwright.sync_api import sync_playwright
+            body_browser_pw = sync_playwright().start()
+            body_browser = body_browser_pw.chromium.launch(headless=True)
+            body_browser_ctx = body_browser.new_context(
+                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                           "(KHTML, like Gecko) Chrome/121.0 Safari/537.36",
+                viewport={"width": 1280, "height": 1600},
+            )
+            body_browser_ctx.add_cookies(_twitter_auth_cookie_objs(cookies))
+            body_browser_page = body_browser_ctx.new_page()
+            print("Body capture: enabled (Playwright + auth cookies)")
+        except Exception as e:
+            print(f"Body capture: disabled ({e})")
+    else:
+        print("Body capture: disabled (no Twitter cookies in env or DB)")
+
+    fetched = failed = bodies = 0
+    try:
+        for i, (aid, tid) in enumerate(pairs):
+            existing = cache["fetched"].get(aid)
+            mode = "body-only" if existing else "full"
+            print(f"  {i+1}/{len(pairs)} [{mode}]: article {aid} (tweet {tid})")
+
+            if existing:
+                # Backfill: keep existing syndication metadata, only fetch body.
+                result = dict(existing)
+            else:
+                result = fetch_x_article(tid)
+                if not result:
+                    cache["failed"][aid] = {
+                        "url": f"https://x.com/i/article/{aid}",
+                        "tweet_id": tid,
+                        "error": "fetch_failed",
+                        "attempted_at": datetime.now().isoformat(),
+                    }
+                    failed += 1
+                    print("    ✗ syndication fetch failed")
+                    with open(MASTER_ARTICLES, "w", encoding="utf-8") as f:
+                        json.dump(cache, f, indent=2, ensure_ascii=False)
+                    if i < len(pairs) - 1:
+                        time.sleep(1)
+                    continue
+                result["article_url"] = f"https://x.com/i/article/{aid}"
+
+            if body_browser_page is not None:
+                try:
+                    body = fetch_x_article_body_via_browser(aid, cookies, page=body_browser_page)
+                except Exception as e:
+                    print(f"    body fetch error: {e}")
+                    body = None
+                if body and body.get("body_html"):
+                    result["body_html"] = body["body_html"]
+                    if body.get("title"):
+                        result["title"] = body["title"]
+                    if body.get("cover_url") and not result.get("image"):
+                        result["image"] = body["cover_url"]
+                    bodies += 1
+                    print(f"    ✓ {result.get('title','')[:70]}  body={len(body['body_html'])}ch")
+                else:
+                    print(f"    ✓ {result.get('title','')[:70]}  (no body)")
+            else:
+                print(f"    ✓ {result.get('title','')[:70]}")
+
             cache["fetched"][aid] = result
-            fetched += 1
-            print(f"    ✓ {result['title'][:70]}")
-        else:
-            cache["failed"][aid] = {
-                "url": f"https://x.com/i/article/{aid}",
-                "tweet_id": tid,
-                "error": "fetch_failed",
-                "attempted_at": datetime.now().isoformat(),
-            }
-            failed += 1
-            print("    ✗ failed")
+            if not existing:
+                fetched += 1
 
-        with open(MASTER_ARTICLES, "w", encoding="utf-8") as f:
-            json.dump(cache, f, indent=2, ensure_ascii=False)
+            with open(MASTER_ARTICLES, "w", encoding="utf-8") as f:
+                json.dump(cache, f, indent=2, ensure_ascii=False)
 
-        if i < len(pairs) - 1:
-            time.sleep(1)
+            if i < len(pairs) - 1:
+                time.sleep(1)
+    finally:
+        try:
+            if body_browser is not None:
+                body_browser.close()
+            if body_browser_pw is not None:
+                body_browser_pw.stop()
+        except Exception:
+            pass
 
-    print(f"\nDone. Fetched: {fetched}, Failed: {failed}")
+    print(f"\nDone. Fetched: {fetched}, Failed: {failed}, Bodies: {bodies}")
     print(f"Cache saved to {MASTER_ARTICLES}")
 
 
@@ -7144,6 +7546,8 @@ def main():
     fetch_articles_parser = subparsers.add_parser("fetch-articles", help="Fetch X article metadata (title, image, excerpt) for article-URL bookmarks")
     fetch_articles_parser.add_argument("--max", type=int, default=0, help="Limit number of articles fetched this run (0 = no limit)")
     fetch_articles_parser.add_argument("--retry-failed", action="store_true", help="Clear and re-attempt previously failed entries")
+    fetch_articles_parser.add_argument("--probe-body", type=str, default=None, metavar="ARTICLE_ID",
+                                       help="One-off: fetch one article's body via auth cookies and dump structure (discovery)")
 
     # Sync command - full workflow
     sync_parser = subparsers.add_parser("sync", help="Full sync: merge, categorize, generate, deploy to server")

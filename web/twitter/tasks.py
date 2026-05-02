@@ -432,7 +432,7 @@ def enrich_new_articles(max_articles: int = 40) -> int:
         result = subprocess.run(
             [sys.executable, str(merger_script), 'fetch-articles',
              '--max', str(max_articles), *retry_flag],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True, text=True, timeout=600,
             cwd=str(TOOLS_DIR.parent)
         )
         if result.returncode != 0:
