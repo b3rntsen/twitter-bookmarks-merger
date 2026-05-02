@@ -106,12 +106,15 @@ services:
     build:
       context: ./nginx
       dockerfile: Dockerfile
-    ports:
-      - "80:80"
-      - "443:443"
+    # Ports no longer bound to host — /srv/edge nginx terminates TLS and
+    # proxies into here over the shared `edge_net` bridge.
+    expose:
+      - "80"
     volumes:
-      # SSL certificates from certbot
-      - certbot-etc:/etc/letsencrypt
+      # SSL certificates no longer needed — edge owns TLS. Mount left
+      # in place (read-only) only because some old conf paths reference
+      # them; the new nginx.conf no longer touches /etc/letsencrypt.
+      - certbot-etc:/etc/letsencrypt:ro
       - certbot-www:/var/www/certbot
       # Static and media files (for Django /new-gen/ app)
       - staticfiles:/app/staticfiles:ro
@@ -124,42 +127,18 @@ services:
     restart: always
     networks:
       - app-network
-
-  certbot:
-    image: certbot/certbot
-    volumes:
-      - certbot-etc:/etc/letsencrypt
-      - certbot-www:/var/www/certbot
-    # Auto-renewal: checks twice per day (43200 seconds = 12 hours)
-    # Only renews if certificates are within 30 days of expiry (Let's Encrypt default)
-    # Uses --quiet to reduce CPU usage and logging
-    # Note: After renewal, run scripts/reload-nginx-after-cert-renewal.sh on the host
-    entrypoint: "/bin/sh"
-    command: >
-      -c "
-      trap exit TERM;
-      while :; do
-        # Check and renew certificates (only renews if within 30 days of expiry)
-        certbot renew --quiet --no-random-sleep-on-renew || true;
-        # Sleep for 12 hours (43200 seconds) before next check
-        sleep 43200;
-      done;
-      "
-    restart: always
-    networks:
-      - app-network
-    depends_on:
-      - nginx
+      - edge_net
 
 volumes:
   media:
   staticfiles:
   db_data:  # Persist database across container recreates
   redis_data:  # Persist Redis data across container recreates
-  certbot-etc:
+  certbot-etc:  # legacy: certs migrated to /srv/edge/letsencrypt; named volume kept for now
   certbot-www:
 
 networks:
   app-network:
     driver: bridge
-
+  edge_net:
+    external: true
