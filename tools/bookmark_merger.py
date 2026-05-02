@@ -1205,6 +1205,7 @@ HTML_BASE = """<!DOCTYPE html>
             border: 1px solid #2f3336;
             border-radius: 12px;
             background: #16181c;
+            color: #e7e9ea;
             overflow: hidden;
         }}
         .article-link-card a.article-header {{
@@ -1250,8 +1251,10 @@ HTML_BASE = """<!DOCTYPE html>
             text-decoration: none;
         }}
         .article-rich .article-image {{
+            display: block;
             width: 100%;
             aspect-ratio: 1.91 / 1;
+            min-height: 180px;
             background-size: cover;
             background-position: center;
             background-color: #0c0e10;
@@ -1271,9 +1274,10 @@ HTML_BASE = """<!DOCTYPE html>
             font-size: 1.05em;
             margin-bottom: 4px;
             line-height: 1.3;
+            color: #e7e9ea;
         }}
         .article-rich .article-excerpt {{
-            color: #71767b;
+            color: #8b98a5;
             font-size: 0.9em;
             line-height: 1.4;
             display: -webkit-box;
@@ -1286,8 +1290,10 @@ HTML_BASE = """<!DOCTYPE html>
         }}
         /* Full article card (detail page) */
         .article-full .article-image {{
+            display: block;
             width: 100%;
             aspect-ratio: 1.91 / 1;
+            min-height: 220px;
             background-size: cover;
             background-position: center;
             background-color: #0c0e10;
@@ -1308,15 +1314,17 @@ HTML_BASE = """<!DOCTYPE html>
             font-weight: 700;
             margin-bottom: 6px;
             line-height: 1.25;
+            color: #e7e9ea;
         }}
         .article-full .article-byline {{
-            color: #71767b;
+            color: #8b98a5;
             font-size: 0.85em;
         }}
         .article-full .article-body {{
             padding: 16px;
             max-width: none;
             border-top: none;
+            color: #e7e9ea;
         }}
         .article-full .article-footer {{
             padding: 12px 16px;
