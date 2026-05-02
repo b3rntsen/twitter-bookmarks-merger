@@ -30,7 +30,7 @@ import shutil
 import subprocess
 import sys
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
@@ -6730,8 +6730,8 @@ def _extract_initial_state(html: str) -> Optional[dict]:
         return None
 
 
-_ARTICLE_PAGE_TIMEOUT_MS = 20000
-_ARTICLE_HYDRATION_TIMEOUT_MS = 12000
+_ARTICLE_PAGE_TIMEOUT_MS = 30000
+_ARTICLE_HYDRATION_TIMEOUT_MS = 30000
 
 
 def _twitter_auth_cookie_objs(cookies: dict) -> list:
@@ -6877,7 +6877,8 @@ def fetch_x_article_body_via_browser(article_id: str, cookies: dict, debug: bool
 
     def _drive(p):
         try:
-            p.goto(url, wait_until="domcontentloaded", timeout=_ARTICLE_PAGE_TIMEOUT_MS)
+            # Use load (not networkidle: SPA may keep polling forever).
+            p.goto(url, wait_until="load", timeout=_ARTICLE_PAGE_TIMEOUT_MS)
             # Use state="attached" — on some networks X overlays a sign-in modal
             # that keeps the article DOM hidden, so the default visible-state
             # wait would time out even though the body markup is in the DOM.
@@ -6994,9 +6995,16 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
     cache.setdefault("failed", {})
 
     retry_failed = bool(getattr(args, "retry_failed", False))
+    retry_bodies = bool(getattr(args, "retry_bodies", False))
     if retry_failed and cache["failed"]:
         print(f"--retry-failed: clearing {len(cache['failed'])} failed entries to retry")
         cache["failed"] = {}
+
+    # Skip body retries when an attempt was made within this window. Prevents
+    # the prod auto-sync from spending 15+ minutes per cycle hammering articles
+    # that won't yield a body on EC2 IPs (X anti-bot modal). Local backfills
+    # use --retry-bodies to override.
+    body_retry_window = timedelta(hours=24)
 
     # Build (article_id, tweet_id) pairs — pick any one bookmark per article.
     # Includes both new articles (not in cache) and cached articles missing body_html
@@ -7004,6 +7012,7 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
     pairs: list[tuple[str, str]] = []
     seen_aids: set[str] = set()
     body_backfill_count = 0
+    body_skipped_recent = 0
     for b in bookmarks:
         m = ARTICLE_URL_PATTERN.search(b.get("Full Text", "") or "")
         if not m:
@@ -7014,6 +7023,16 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
         cached = cache["fetched"].get(aid)
         if cached and cached.get("body_html"):
             continue
+        if cached and not retry_bodies:
+            attempted_at = cached.get("body_attempted_at")
+            if attempted_at:
+                try:
+                    when = datetime.fromisoformat(attempted_at)
+                    if datetime.now() - when < body_retry_window:
+                        body_skipped_recent += 1
+                        continue
+                except (ValueError, TypeError):
+                    pass
         tid = str(b.get("Tweet Id") or "").strip()
         if not tid:
             continue
@@ -7024,6 +7043,8 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
 
     print(f"Cached: {len(cache['fetched'])} fetched, {len(cache['failed'])} failed")
     print(f"To fetch/enrich: {len(pairs)} ({body_backfill_count} body backfill, {len(pairs)-body_backfill_count} new)")
+    if body_skipped_recent:
+        print(f"Skipped {body_skipped_recent} body retries (attempted in last 24h; pass --retry-bodies to override)")
     if getattr(args, "max", 0):
         pairs = pairs[: args.max]
         print(f"Limiting this run to {len(pairs)} articles (--max)")
@@ -7104,6 +7125,7 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
                             ctx.close()
                     except Exception:
                         pass
+                result["body_attempted_at"] = datetime.now().isoformat()
                 if body and body.get("body_html"):
                     result["body_html"] = body["body_html"]
                     if body.get("title"):
@@ -7575,6 +7597,8 @@ def main():
     fetch_articles_parser = subparsers.add_parser("fetch-articles", help="Fetch X article metadata (title, image, excerpt) for article-URL bookmarks")
     fetch_articles_parser.add_argument("--max", type=int, default=0, help="Limit number of articles fetched this run (0 = no limit)")
     fetch_articles_parser.add_argument("--retry-failed", action="store_true", help="Clear and re-attempt previously failed entries")
+    fetch_articles_parser.add_argument("--retry-bodies", action="store_true",
+                                       help="Re-attempt body fetch for articles tried in the last 24h")
     fetch_articles_parser.add_argument("--probe-body", type=str, default=None, metavar="ARTICLE_ID",
                                        help="One-off: fetch one article's body via auth cookies and dump structure (discovery)")
 
