@@ -1255,8 +1255,8 @@ HTML_BASE = """<!DOCTYPE html>
             width: 100%;
             aspect-ratio: 1.91 / 1;
             min-height: 180px;
-            background-size: cover;
-            background-position: center;
+            object-fit: cover;
+            object-position: center;
             background-color: #0c0e10;
         }}
         .article-rich .article-rich-body {{
@@ -1294,8 +1294,8 @@ HTML_BASE = """<!DOCTYPE html>
             width: 100%;
             aspect-ratio: 1.91 / 1;
             min-height: 220px;
-            background-size: cover;
-            background-position: center;
+            object-fit: cover;
+            object-position: center;
             background-color: #0c0e10;
         }}
         .article-full .article-header-row {{
@@ -1999,8 +1999,10 @@ def render_article_link_card(article_url: str, article_data: dict | None = None,
         image_html = ""
         if image:
             image_html = (
-                f'<div class="article-image" '
-                f'style="background-image:url(&quot;{html_lib.escape(image, quote=True)}&quot;);"></div>'
+                f'<img class="article-image" '
+                f'src="{html_lib.escape(image, quote=True)}" alt="" loading="lazy" '
+                f'referrerpolicy="no-referrer" '
+                f'onerror="this.style.display=&#39;none&#39;">'
             )
         excerpt_html = (
             f'<div class="article-excerpt">{html_lib.escape(excerpt)}</div>' if excerpt else ""
@@ -2048,8 +2050,10 @@ def render_article_full_card(article_url: str, article_data: dict | None = None,
     byline = ((article_data or {}).get("byline") or "").strip() if article_data else ""
 
     image_html = (
-        f'<div class="article-image" '
-        f'style="background-image:url(&quot;{html_lib.escape(image, quote=True)}&quot;);"></div>'
+        f'<img class="article-image" '
+        f'src="{html_lib.escape(image, quote=True)}" alt="" loading="lazy" '
+        f'referrerpolicy="no-referrer" '
+        f'onerror="this.style.display=&#39;none&#39;">'
         if image else ""
     )
     byline_html = f'<div class="article-byline">{html_lib.escape(byline)}</div>' if byline else ""
@@ -4064,7 +4068,7 @@ function renderArticleLinkCard(articleUrl, articleData, localHref) {{
         const title = articleData.title || 'Article on X';
         const excerpt = articleData.excerpt || '';
         const imageHtml = image
-            ? `<div class="article-image" style="background-image:url('${{escapeHtml(image)}}');"></div>`
+            ? `<img class="article-image" src="${{escapeHtml(image)}}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
             : '';
         const excerptHtml = excerpt
             ? `<div class="article-excerpt">${{escapeHtml(excerpt)}}</div>`
@@ -6041,7 +6045,7 @@ function renderArticleLinkCard(articleUrl, articleData, localHref) {{
         const title = articleData.title || 'Article on X';
         const excerpt = articleData.excerpt || '';
         const imageHtml = image
-            ? `<div class="article-image" style="background-image:url('${{escapeHtml(image)}}');"></div>`
+            ? `<img class="article-image" src="${{escapeHtml(image)}}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.style.display='none'">`
             : '';
         const excerptHtml = excerpt
             ? `<div class="article-excerpt">${{escapeHtml(excerpt)}}</div>`
