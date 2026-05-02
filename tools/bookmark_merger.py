@@ -6878,7 +6878,11 @@ def fetch_x_article_body_via_browser(article_id: str, cookies: dict, debug: bool
     def _drive(p):
         try:
             p.goto(url, wait_until="domcontentloaded", timeout=_ARTICLE_PAGE_TIMEOUT_MS)
+            # Use state="attached" — on some networks X overlays a sign-in modal
+            # that keeps the article DOM hidden, so the default visible-state
+            # wait would time out even though the body markup is in the DOM.
             p.wait_for_selector('[data-testid="longformRichTextComponent"]',
+                                state="attached",
                                 timeout=_ARTICLE_HYDRATION_TIMEOUT_MS)
             p.wait_for_timeout(800)
             html = p.content()
@@ -6891,7 +6895,15 @@ def fetch_x_article_body_via_browser(article_id: str, cookies: dict, debug: bool
                     print(f"  hydration timed out — partial DOM saved: {snap}")
                 except Exception:
                     pass
-            return None
+            try:
+                html = p.content()
+                if "longformRichTextComponent" in html:
+                    if debug:
+                        print("  selector present in hidden DOM — proceeding to parse")
+                else:
+                    return None
+            except Exception:
+                return None
         if debug:
             snap = MASTER_DIR / f"_probe_article_{article_id}_rendered.html"
             snap.parent.mkdir(parents=True, exist_ok=True)
