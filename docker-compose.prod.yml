@@ -74,6 +74,7 @@ services:
       - ./birdmarks:/app/birdmarks:ro
       - ./birdmarks_cache:/app/birdmarks_cache
       - ./bookmarks-media:/app/bookmarks-media
+      - ./bookmarks-articles:/app/bookmarks-articles
       - ./master:/app/master
       - ./server:/app/server
       - ./bookmarks-html:/app/bookmarks-html
@@ -86,6 +87,7 @@ services:
       - Q_WORKERS=1  # Process only one job at a time to limit memory usage
       - Q_QUEUE_LIMIT=10  # Reduce queue limit
       - BOOKMARKS_MEDIA_DIR=/app/bookmarks-media
+      - BOOKMARKS_ARTICLE_MEDIA_DIR=/app/bookmarks-articles
     depends_on:
       redis:
         condition: service_healthy
@@ -122,6 +124,7 @@ services:
       # Static bookmarks site (synced via rsync from local)
       - ./bookmarks-html:/app/bookmarks-html:ro
       - ./bookmarks-media:/app/bookmarks-media:ro
+      - ./bookmarks-articles:/app/bookmarks-articles:ro
     depends_on:
       - web
     restart: always

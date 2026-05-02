@@ -55,6 +55,7 @@ MASTER_CATEGORIES = MASTER_DIR / "categories.json"
 MASTER_STORIES = MASTER_DIR / "stories.json"
 MASTER_AUTHORS = MASTER_DIR / "authors.json"
 MASTER_MEDIA_DIR = Path(os.environ.get("BOOKMARKS_MEDIA_DIR", str(MASTER_DIR / "media")))
+MASTER_ARTICLE_MEDIA_DIR = Path(os.environ.get("BOOKMARKS_ARTICLE_MEDIA_DIR", str(MASTER_DIR / "article_media")))
 MASTER_HTML_DIR = MASTER_DIR / "html"
 MASTER_EXPORTS_DIR = MASTER_DIR / "exports"
 MASTER_QUOTED_TWEETS = MASTER_DIR / "quoted_tweets.json"
@@ -1974,8 +1975,32 @@ def load_articles_cache(refresh: bool = False) -> dict:
     return _ARTICLES_CACHE
 
 
+def _article_cover_src(article_data: dict | None, article_url: str,
+                       depth_prefix: str = "../../") -> str:
+    """Pick the best available cover URL for an article.
+
+    Prefers the locally-downloaded copy under article_media/ (so we keep
+    showing the cover even if X expires the CDN URL); falls back to the
+    upstream image URL stored on the article record.
+
+    `depth_prefix` is the relative path from the rendering page back to
+    master/, e.g. "../../" for tweet detail pages and "" for index/timeline.
+    publish-server rewrites these to absolute /media/articles/ URLs.
+    """
+    if not article_data:
+        return ""
+    local = (article_data.get("image_local") or "").strip()
+    if local:
+        m = re.search(r"/i/article/(\d+)", article_url)
+        aid = m.group(1) if m else (article_data.get("article_rest_id") or "").strip()
+        if aid:
+            return f"{depth_prefix}article_media/{aid}/{local}"
+    return (article_data.get("image") or "").strip()
+
+
 def render_article_link_card(article_url: str, article_data: dict | None = None,
-                             local_href: str | None = None) -> str:
+                             local_href: str | None = None,
+                             cover_depth_prefix: str = "../../") -> str:
     """Render an article card.
 
     If article_data has title/excerpt/image, render the enriched card (image header,
@@ -1992,7 +2017,7 @@ def render_article_link_card(article_url: str, article_data: dict | None = None,
         link_attrs = f'href="{x_href}" target="_blank" rel="noopener"'
 
     if article_data and (article_data.get("title") or article_data.get("image") or article_data.get("excerpt")):
-        image = (article_data.get("image") or "").strip()
+        image = _article_cover_src(article_data, article_url, depth_prefix=cover_depth_prefix)
         title = (article_data.get("title") or "Article on X").strip()
         excerpt = (article_data.get("excerpt") or "").strip()
 
@@ -2045,7 +2070,7 @@ def render_article_full_card(article_url: str, article_data: dict | None = None,
         return render_article_link_card(article_url)
 
     href = html_lib.escape(article_url, quote=True)
-    image = (article_data or {}).get("image", "").strip() if article_data else ""
+    image = _article_cover_src(article_data, article_url, depth_prefix="../../")
     title = ((article_data or {}).get("title") or "Article on X").strip()
     byline = ((article_data or {}).get("byline") or "").strip() if article_data else ""
 
@@ -3452,6 +3477,7 @@ function applyFilters() {{
     page_html = page_html.replace('../stories/', '../../stories/')
     page_html = page_html.replace('../tweets/', '../../tweets/')
     page_html = page_html.replace('../../media/', '../../../media/')
+    page_html = page_html.replace('../../article_media/', '../../../article_media/')
 
     with open(stories_dir / f"{year}.html", "w", encoding="utf-8") as f:
         f.write(page_html)
@@ -4808,6 +4834,7 @@ function toggleYear(year) {
             month_html = month_html.replace('../timeline/', '../../../timeline/')
             month_html = month_html.replace('../tweets/', '../../../tweets/')
             month_html = month_html.replace('../../media/', '../../../../media/')
+            month_html = month_html.replace('../../article_media/', '../../../../article_media/')
 
             with open(month_dir / "index.html", "w", encoding="utf-8") as f:
                 f.write(month_html)
@@ -6437,6 +6464,7 @@ function applyFilters() {{
                 content = add_admin_link(content)
                 # Fix media paths to absolute server paths
                 content = content.replace('../../../media/', '/media/bookmarks/')
+                content = content.replace('../../../article_media/', '/media/articles/')
 
                 with open(html_file, "w", encoding="utf-8") as f:
                     f.write(content)
@@ -6459,9 +6487,14 @@ function applyFilters() {{
             content = fix_paths_for_server(content)
             content = add_admin_link(content)
             # Fix media paths
-            content = content.replace('../../media/', '/media/bookmarks/')
-            content = content.replace('../../../media/', '/media/bookmarks/')
+            # Longest depth first — otherwise the shorter pattern matches the
+            # tail of a deeper path and leaves a stray `../..` prefix.
             content = content.replace('../../../../media/', '/media/bookmarks/')
+            content = content.replace('../../../media/', '/media/bookmarks/')
+            content = content.replace('../../media/', '/media/bookmarks/')
+            content = content.replace('../../../../article_media/', '/media/articles/')
+            content = content.replace('../../../article_media/', '/media/articles/')
+            content = content.replace('../../article_media/', '/media/articles/')
 
             with open(html_file, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -6485,6 +6518,7 @@ function applyFilters() {{
             content = add_admin_link(content)
             # Fix media paths
             content = content.replace('../../media/', '/media/bookmarks/')
+            content = content.replace('../../article_media/', '/media/articles/')
 
             with open(html_file, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -6509,6 +6543,8 @@ function applyFilters() {{
             # Fix media paths (../../media/ from tweets/ subdirectory)
             content = content.replace('../../media/', '/media/bookmarks/')
             content = content.replace('../media/', '/media/bookmarks/')
+            content = content.replace('../../article_media/', '/media/articles/')
+            content = content.replace('../article_media/', '/media/articles/')
 
             with open(html_file, "w", encoding="utf-8") as f:
                 f.write(content)
@@ -6591,6 +6627,116 @@ def extract_tweet_id_from_url(url: str) -> Optional[str]:
     import re
     match = re.search(r"/status/(\d+)", url)
     return match.group(1) if match else None
+
+
+_ARTICLE_IMG_EXT_BY_CT = {
+    "image/jpeg": ".jpg",
+    "image/jpg": ".jpg",
+    "image/png": ".png",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+
+
+def _article_image_filename(url: str, hint: str, ext: str) -> str:
+    """Build a stable filename for a downloaded article image.
+
+    Uses a short hash of the source URL so the same upstream URL always lands
+    at the same file path — letting re-runs short-circuit when the file is
+    already on disk.
+    """
+    import hashlib
+    h = hashlib.sha1(url.encode("utf-8")).hexdigest()[:10]
+    return f"{hint}_{h}{ext}"
+
+
+def _download_article_image(article_id: str, url: str, hint: str = "img") -> Optional[str]:
+    """Download an X CDN image into MASTER_ARTICLE_MEDIA_DIR/{article_id}/<file>.
+
+    Returns the basename (e.g. "cover_abc123.jpg") on success, or None on failure.
+    The caller composes a relative or absolute URL from this and the article id.
+    Idempotent: if a file with the same hashed name already exists, the download
+    is skipped and the existing basename is returned.
+    """
+    import requests
+
+    if not url or not url.startswith(("http://", "https://")):
+        return None
+
+    art_dir = MASTER_ARTICLE_MEDIA_DIR / article_id
+    art_dir.mkdir(parents=True, exist_ok=True)
+
+    # Try to determine the extension from the URL path first; fall back to
+    # Content-Type after the request returns.
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    path_ext = Path(parsed.path).suffix.lower()
+    if path_ext in {".jpg", ".jpeg", ".png", ".gif", ".webp"}:
+        provisional_ext = ".jpg" if path_ext == ".jpeg" else path_ext
+    else:
+        provisional_ext = ""
+
+    if provisional_ext:
+        candidate = art_dir / _article_image_filename(url, hint, provisional_ext)
+        if candidate.exists() and candidate.stat().st_size > 0:
+            return candidate.name
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/121.0 Safari/537.36",
+        "Accept": "image/avif,image/webp,image/png,image/jpeg,image/*;q=0.8,*/*;q=0.5",
+    }
+    try:
+        resp = requests.get(url, headers=headers, timeout=30, stream=True)
+        if resp.status_code != 200:
+            return None
+        ct = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        ext = _ARTICLE_IMG_EXT_BY_CT.get(ct) or provisional_ext or ".jpg"
+        filename = _article_image_filename(url, hint, ext)
+        target = art_dir / filename
+        if target.exists() and target.stat().st_size > 0:
+            return filename
+        with open(target, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    f.write(chunk)
+        if target.stat().st_size == 0:
+            try:
+                target.unlink()
+            except OSError:
+                pass
+            return None
+        return filename
+    except Exception:
+        return None
+
+
+def _localize_body_html_images(article_id: str, body_html: str) -> str:
+    """Download every <img> in body_html and rewrite its src to a relative
+    path under article_media. Leaves the rest of the markup unchanged.
+
+    The path uses ``../../article_media/{aid}/{file}`` so it resolves correctly
+    from a tweet detail page (master/html/tweets/X.html). publish-server
+    rewrites this prefix to ``/media/articles/`` when emitting server HTML.
+    """
+    import re
+    if not body_html:
+        return body_html
+
+    pattern = re.compile(r'<img\b[^>]*\bsrc="([^"]+)"[^>]*>', re.IGNORECASE)
+
+    def repl(match: "re.Match[str]") -> str:
+        full = match.group(0)
+        src = match.group(1)
+        if not src.startswith(("http://", "https://")):
+            return full
+        local = _download_article_image(article_id, src, hint="body")
+        if not local:
+            return full
+        new_src = f"../../article_media/{article_id}/{local}"
+        return full.replace(f'src="{src}"', f'src="{new_src}"', 1)
+
+    return pattern.sub(repl, body_html)
 
 
 def _syndication_token(tweet_id: str) -> str:
@@ -7006,6 +7152,29 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
     cache.setdefault("fetched", {})
     cache.setdefault("failed", {})
 
+    # Backfill local media for already-cached entries: covers that haven't been
+    # downloaded yet, and bodies whose <img> tags still point at pbs.twimg.com.
+    # Runs before the main fetch loop so a re-run of `fetch-articles` is enough
+    # to populate article_media/ for the existing cache.
+    media_covers = media_bodies = 0
+    for aid_cached, entry in cache["fetched"].items():
+        cover_url = (entry.get("image") or "").strip()
+        if cover_url and not entry.get("image_local"):
+            local_name = _download_article_image(aid_cached, cover_url, hint="cover")
+            if local_name:
+                entry["image_local"] = local_name
+                media_covers += 1
+        body_html_existing = entry.get("body_html") or ""
+        if body_html_existing and "pbs.twimg.com" in body_html_existing:
+            new_body = _localize_body_html_images(aid_cached, body_html_existing)
+            if new_body != body_html_existing:
+                entry["body_html"] = new_body
+                media_bodies += 1
+    if media_covers or media_bodies:
+        with open(MASTER_ARTICLES, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2, ensure_ascii=False)
+        print(f"Media backfill: {media_covers} covers, {media_bodies} bodies localized")
+
     retry_failed = bool(getattr(args, "retry_failed", False))
     retry_bodies = bool(getattr(args, "retry_bodies", False))
     if retry_failed and cache["failed"]:
@@ -7139,7 +7308,7 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
                         pass
                 result["body_attempted_at"] = datetime.now().isoformat()
                 if body and body.get("body_html"):
-                    result["body_html"] = body["body_html"]
+                    result["body_html"] = _localize_body_html_images(aid, body["body_html"])
                     if body.get("title"):
                         result["title"] = body["title"]
                     if body.get("cover_url") and not result.get("image"):
@@ -7150,6 +7319,14 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
                     print(f"    ✓ {result.get('title','')[:70]}  (no body)", flush=True)
             else:
                 print(f"    ✓ {result.get('title','')[:70]}", flush=True)
+
+            # Download the cover image too, so the article header stays visible
+            # even if X's CDN later expires/ratelimits the original URL.
+            cover_url = (result.get("image") or "").strip()
+            if cover_url and not result.get("image_local"):
+                local_name = _download_article_image(aid, cover_url, hint="cover")
+                if local_name:
+                    result["image_local"] = local_name
 
             cache["fetched"][aid] = result
             if not existing:

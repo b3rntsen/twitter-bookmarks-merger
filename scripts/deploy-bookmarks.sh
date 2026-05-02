@@ -26,6 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 SERVER_HTML="${PROJECT_DIR}/server/html"
 MASTER_MEDIA="${PROJECT_DIR}/master/media"
+MASTER_ARTICLE_MEDIA="${PROJECT_DIR}/master/article_media"
 REMOTE_DIR="/home/${SERVER_USER}/twitter-bookmarks"
 
 # Parse arguments
@@ -67,7 +68,7 @@ fi
 
 # Create remote directories if they don't exist
 echo "Ensuring remote directories exist..."
-ssh $SSH_OPTS "$SERVER" "mkdir -p ${REMOTE_DIR}/bookmarks-html ${REMOTE_DIR}/bookmarks-media"
+ssh $SSH_OPTS "$SERVER" "mkdir -p ${REMOTE_DIR}/bookmarks-html ${REMOTE_DIR}/bookmarks-media ${REMOTE_DIR}/bookmarks-articles"
 
 # Deploy HTML
 if [ "$MEDIA_ONLY" = false ]; then
@@ -89,6 +90,16 @@ if [ "$HTML_ONLY" = false ]; then
         "$MASTER_MEDIA/" \
         "${SERVER}:${REMOTE_DIR}/bookmarks-media/"
     echo ""
+
+    if [ -d "$MASTER_ARTICLE_MEDIA" ]; then
+        echo -e "${YELLOW}Syncing article media...${NC}"
+        rsync -avz --progress \
+            -e "ssh $SSH_OPTS" \
+            --exclude '.DS_Store' \
+            "$MASTER_ARTICLE_MEDIA/" \
+            "${SERVER}:${REMOTE_DIR}/bookmarks-articles/"
+        echo ""
+    fi
 fi
 
 echo -e "${GREEN}✓ Deployment complete!${NC}"

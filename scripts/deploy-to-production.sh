@@ -47,6 +47,7 @@ rsync -avz --progress \
   --exclude='server/' \
   --exclude='bookmarks-html/' \
   --exclude='bookmarks-media/' \
+  --exclude='bookmarks-articles/' \
   --exclude='birdmarks_cache/' \
   --exclude='terraform/' \
   -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=no" \
