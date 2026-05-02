@@ -32,6 +32,8 @@ raw/
 server/
 bookmarks-media/
 bookmarks-html/
+birdmarks/
+birdmarks_cache/
 *.sqlite3
 db.sqlite3
 media/

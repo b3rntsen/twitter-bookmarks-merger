@@ -142,10 +142,10 @@ resource "aws_instance" "web" {
   vpc_security_group_ids = [aws_security_group.web_sg.id]
   iam_instance_profile   = aws_iam_instance_profile.ec2_profile.name
 
-  # 60GB gp3 storage (doubled from 30GB for media files)
+  # 512GB gp3 storage (room for growing media + Docker images + build cache)
   root_block_device {
     volume_type = "gp3"
-    volume_size = 60
+    volume_size = 512
     encrypted   = true
   }
 
