@@ -411,6 +411,48 @@ def export_django_tweets_to_bookmarks_json():
     return new_count
 
 
+def enrich_new_articles(max_articles: int = 40) -> int:
+    """Fetch article card metadata for article-URL bookmarks into master/articles.json.
+
+    Uses the public syndication endpoint (no auth). Safe to re-run; only uncached
+    articles are fetched. Returns 1 on success, 0 on failure (signalling logs only).
+    """
+    try:
+        merger_script = TOOLS_DIR / 'bookmark_merger.py'
+        if not merger_script.exists():
+            logger.warning(f"bookmark_merger.py not found at {merger_script}")
+            return 0
+
+        # Retry previously-failed entries once per container-lifetime so the switch
+        # from OG-scrape to syndication picks up older cache misses without manual
+        # intervention. We gate on a per-container marker file.
+        retry_marker = MASTER_DIR / '.article_retry_done'
+        retry_flag = [] if retry_marker.exists() else ['--retry-failed']
+
+        result = subprocess.run(
+            [sys.executable, str(merger_script), 'fetch-articles',
+             '--max', str(max_articles), *retry_flag],
+            capture_output=True, text=True, timeout=300,
+            cwd=str(TOOLS_DIR.parent)
+        )
+        if result.returncode != 0:
+            logger.warning(f"fetch-articles exited non-zero: {result.stderr[:300]}")
+            return 0
+
+        if retry_flag:
+            try:
+                retry_marker.touch()
+            except Exception:
+                pass
+
+        tail = (result.stdout or "").strip().splitlines()[-5:]
+        logger.info("fetch-articles: " + " | ".join(tail))
+        return 1
+    except Exception as e:
+        logger.warning(f"enrich_new_articles failed: {e}")
+        return 0
+
+
 def regenerate_static_site():
     """Regenerate the static bookmarks HTML site after sync."""
     try:
@@ -607,7 +649,13 @@ def execute_bookmark_sync(sync_job_id: int):
         except Exception as cat_error:
             logger.error(f"Categorization failed: {cat_error}")
 
-        # Step 5: Regenerate static site HTML
+        # Step 5: Enrich new articles with OG metadata (best-effort)
+        try:
+            enrich_new_articles()
+        except Exception as enrich_error:
+            logger.warning(f"Article enrichment skipped: {enrich_error}")
+
+        # Step 6: Regenerate static site HTML
         try:
             regenerate_static_site()
         except Exception as regen_error:

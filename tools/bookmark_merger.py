@@ -21,6 +21,7 @@ Usage:
 """
 
 import argparse
+import html as html_lib
 import json
 import markdown
 import os
@@ -1157,10 +1158,47 @@ HTML_BASE = """<!DOCTYPE html>
         .author-info {{ flex: 1; }}
         .author-name {{ font-weight: bold; }}
         .author-handle {{ color: var(--secondary); }}
+        .tweet-card:target,
+        .tweet-card-highlight {{
+            box-shadow: 0 0 0 2px #1d9bf0, 0 0 20px rgba(29, 155, 240, 0.35);
+            transition: box-shadow 0.4s ease;
+        }}
         .tweet-text {{
             margin-bottom: 15px;
             white-space: pre-wrap;
             word-break: break-word;
+        }}
+        .tweet-text:empty {{
+            display: none;
+        }}
+        /* Truncation state on timeline/category cards — collapsed into ~8 lines with fade-out */
+        .tweet-text.truncated {{
+            max-height: 13em;
+            overflow: hidden;
+            position: relative;
+        }}
+        .tweet-text.truncated::after {{
+            content: "";
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            height: 2em;
+            background: linear-gradient(transparent, #16181c);
+            pointer-events: none;
+        }}
+        .show-more-btn {{
+            color: var(--link, #1d9bf0);
+            background: none;
+            border: none;
+            padding: 0;
+            margin: -6px 0 12px;
+            cursor: pointer;
+            font: inherit;
+            font-size: 0.9em;
+        }}
+        .show-more-btn:hover {{
+            text-decoration: underline;
         }}
         .article-card {{
             margin-bottom: 15px;
@@ -1168,6 +1206,10 @@ HTML_BASE = """<!DOCTYPE html>
             border-radius: 12px;
             background: #16181c;
             overflow: hidden;
+        }}
+        .article-link-card a.article-header {{
+            color: inherit;
+            text-decoration: none;
         }}
         .article-header {{
             display: flex;
@@ -1200,6 +1242,90 @@ HTML_BASE = """<!DOCTYPE html>
             color: #71767b;
             flex-shrink: 0;
             font-size: 12px;
+        }}
+        /* Enriched article card (timeline) — image header + title + excerpt */
+        .article-rich .article-rich-link {{
+            display: block;
+            color: inherit;
+            text-decoration: none;
+        }}
+        .article-rich .article-image {{
+            width: 100%;
+            aspect-ratio: 1.91 / 1;
+            background-size: cover;
+            background-position: center;
+            background-color: #0c0e10;
+        }}
+        .article-rich .article-rich-body {{
+            padding: 12px 14px;
+        }}
+        .article-rich .article-source {{
+            font-size: 0.75em;
+            color: #71767b;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-bottom: 4px;
+        }}
+        .article-rich .article-title {{
+            font-weight: 600;
+            font-size: 1.05em;
+            margin-bottom: 4px;
+            line-height: 1.3;
+        }}
+        .article-rich .article-excerpt {{
+            color: #71767b;
+            font-size: 0.9em;
+            line-height: 1.4;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }}
+        .article-rich:hover {{
+            background: #101316;
+        }}
+        /* Full article card (detail page) */
+        .article-full .article-image {{
+            width: 100%;
+            aspect-ratio: 1.91 / 1;
+            background-size: cover;
+            background-position: center;
+            background-color: #0c0e10;
+        }}
+        .article-full .article-header-row {{
+            padding: 14px 16px 8px;
+            border-bottom: 1px solid #2f3336;
+        }}
+        .article-full .article-source {{
+            font-size: 0.75em;
+            color: #71767b;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+            margin-bottom: 4px;
+        }}
+        .article-full .article-title {{
+            font-size: 1.25em;
+            font-weight: 700;
+            margin-bottom: 6px;
+            line-height: 1.25;
+        }}
+        .article-full .article-byline {{
+            color: #71767b;
+            font-size: 0.85em;
+        }}
+        .article-full .article-body {{
+            padding: 16px;
+            max-width: none;
+            border-top: none;
+        }}
+        .article-full .article-footer {{
+            padding: 12px 16px;
+            border-top: 1px solid #2f3336;
+            background: #0a0c0e;
+            font-size: 0.9em;
+        }}
+        .article-full .article-footer a {{
+            color: #1d9bf0;
         }}
         .article-body {{
             padding: 0 20px 20px;
@@ -1244,6 +1370,88 @@ HTML_BASE = """<!DOCTYPE html>
             min-height: 200px;
             border-radius: 12px;
             background: #1a1a2e;
+        }}
+        /* Image carousel for tweets with multiple media items */
+        .tweet-carousel {{
+            position: relative;
+            margin-bottom: 12px;
+            border-radius: 14px;
+            overflow: hidden;
+            border: 1px solid #2f3336;
+        }}
+        .carousel-track {{
+            display: flex;
+            overflow-x: auto;
+            scroll-snap-type: x mandatory;
+            scrollbar-width: none;
+        }}
+        .carousel-track::-webkit-scrollbar {{
+            display: none;
+        }}
+        .carousel-track > * {{
+            flex-shrink: 0;
+            width: 100%;
+            scroll-snap-align: start;
+        }}
+        .carousel-track img, .carousel-track video {{
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            object-fit: cover;
+            background: #000;
+            display: block;
+            border-radius: 0;
+            margin: 0;
+        }}
+        .carousel-count {{
+            position: absolute;
+            top: 8px;
+            right: 10px;
+            background: rgba(0, 0, 0, 0.75);
+            color: #fff;
+            font-size: 0.78em;
+            padding: 2px 8px;
+            border-radius: 999px;
+            pointer-events: none;
+        }}
+        .carousel-dots {{
+            position: absolute;
+            bottom: 8px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 4px;
+            pointer-events: none;
+        }}
+        .carousel-dots span {{
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.4);
+        }}
+        .carousel-dots span.active {{
+            background: #fff;
+        }}
+        .carousel-nav {{
+            position: absolute;
+            top: 50%;
+            transform: translateY(-50%);
+            background: rgba(0, 0, 0, 0.55);
+            color: #fff;
+            border: none;
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 16px;
+            z-index: 2;
+        }}
+        .carousel-nav.prev {{ left: 8px; }}
+        .carousel-nav.next {{ right: 8px; }}
+        .carousel-nav:hover {{
+            background: rgba(0, 0, 0, 0.8);
         }}
         .quoted-tweet {{
             margin: 12px 0;
@@ -1715,8 +1923,147 @@ HTML_BASE = """<!DOCTYPE html>
 </html>
 """
 
+ARTICLE_URL_PATTERN = re.compile(r'https?://(?:x|twitter)\.com/i/article/(\d+)')
+
+
+_ARTICLES_CACHE: dict | None = None
+
+
+def load_articles_cache(refresh: bool = False) -> dict:
+    """Load the fetched-article OG metadata cache, keyed by article_id.
+
+    Memoized: subsequent calls return the same dict unless refresh=True.
+    Returns {} if the file is missing or the "fetched" section is empty.
+    """
+    global _ARTICLES_CACHE
+    if _ARTICLES_CACHE is not None and not refresh:
+        return _ARTICLES_CACHE
+    if not MASTER_ARTICLES.exists():
+        _ARTICLES_CACHE = {}
+        return _ARTICLES_CACHE
+    try:
+        with open(MASTER_ARTICLES, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        _ARTICLES_CACHE = data.get("fetched", {}) or {}
+    except Exception:
+        _ARTICLES_CACHE = {}
+    return _ARTICLES_CACHE
+
+
+def render_article_link_card(article_url: str, article_data: dict | None = None) -> str:
+    """Render an article card.
+
+    If article_data has title/excerpt/image, render the enriched card (image header,
+    title, excerpt). Otherwise, fall back to the plain link card.
+    """
+    href = html_lib.escape(article_url, quote=True)
+
+    if article_data and (article_data.get("title") or article_data.get("image") or article_data.get("excerpt")):
+        image = (article_data.get("image") or "").strip()
+        title = (article_data.get("title") or "Article on X").strip()
+        excerpt = (article_data.get("excerpt") or "").strip()
+
+        image_html = ""
+        if image:
+            image_html = (
+                f'<div class="article-image" '
+                f'style="background-image:url(&quot;{html_lib.escape(image, quote=True)}&quot;);"></div>'
+            )
+        excerpt_html = (
+            f'<div class="article-excerpt">{html_lib.escape(excerpt)}</div>' if excerpt else ""
+        )
+        return (
+            '<div class="article-card article-link-card article-rich">'
+            f'<a class="article-rich-link" href="{href}" target="_blank" rel="noopener">'
+            f'{image_html}'
+            '<div class="article-rich-body">'
+            '<div class="article-source">&#128196; Article on X</div>'
+            f'<div class="article-title">{html_lib.escape(title)}</div>'
+            f'{excerpt_html}'
+            '</div>'
+            '</a>'
+            '</div>'
+        )
+
+    return (
+        '<div class="article-card article-link-card">'
+        f'<a class="article-header" href="{href}" target="_blank" rel="noopener">'
+        '<div class="article-icon">&#128196;</div>'
+        '<div class="article-meta">'
+        '<div class="article-title">Read article on X</div>'
+        f'<div class="article-excerpt">{html_lib.escape(article_url)}</div>'
+        '</div>'
+        '<div class="article-toggle">&#8599;</div>'
+        '</a>'
+        '</div>'
+    )
+
+
+def render_article_full_card(article_url: str, article_data: dict | None = None,
+                             body_html: str | None = None) -> str:
+    """Render the detail-page article card (image + header row + full body).
+
+    Used on /tweets/{id}.html. If body_html is None, falls back to the link card
+    variant so detail pages remain clickable when enrichment hasn't arrived yet.
+    """
+    if not body_html and not article_data:
+        return render_article_link_card(article_url)
+
+    href = html_lib.escape(article_url, quote=True)
+    image = (article_data or {}).get("image", "").strip() if article_data else ""
+    title = ((article_data or {}).get("title") or "Article on X").strip()
+    byline = ((article_data or {}).get("byline") or "").strip() if article_data else ""
+
+    image_html = (
+        f'<div class="article-image" '
+        f'style="background-image:url(&quot;{html_lib.escape(image, quote=True)}&quot;);"></div>'
+        if image else ""
+    )
+    byline_html = f'<div class="article-byline">{html_lib.escape(byline)}</div>' if byline else ""
+    body_part = (
+        f'<div class="article-body">{body_html}</div>' if body_html
+        else f'<div class="article-body"><p><em>Article content is not yet cached. '
+             f'<a href="{href}" target="_blank" rel="noopener">Read on X &rarr;</a></em></p></div>'
+    )
+
+    return (
+        '<div class="article-card article-full">'
+        f'{image_html}'
+        '<div class="article-header-row">'
+        '<div class="article-source">&#128196; Article on X</div>'
+        f'<div class="article-title">{html_lib.escape(title)}</div>'
+        f'{byline_html}'
+        '</div>'
+        f'{body_part}'
+        '<div class="article-footer">'
+        f'<a href="{href}" target="_blank" rel="noopener">Read on X &rarr;</a>'
+        '</div>'
+        '</div>'
+    )
+
+
+def process_tweet_text(text: str, articles_cache: dict | None = None) -> tuple[str, str]:
+    """Split tweet text into (visible_text_html, article_card_html).
+
+    If the text contains an x.com/i/article/<id> URL, strip it from the visible
+    text and render it as an article card. If articles_cache has enriched metadata
+    for that article id, the card shows title/image/excerpt; otherwise it's a
+    plain link card. Both outputs are HTML-safe.
+    """
+    if not text:
+        return "", ""
+    match = ARTICLE_URL_PATTERN.search(text)
+    if not match:
+        return html_lib.escape(text), ""
+    article_url = match.group(0)
+    article_id = match.group(1)
+    remaining = (text[:match.start()] + text[match.end():]).strip()
+    article_data = (articles_cache or {}).get(article_id)
+    return html_lib.escape(remaining), render_article_link_card(article_url, article_data)
+
+
 TWEET_TEMPLATE = """
-<article class="tweet-card" data-text="{search_text}">
+<article class="tweet-card{card_modifier_class}" id="tweet-{tweet_id}" data-tweet-id="{tweet_id}" data-text="{search_text}">
     <div class="tweet-header">
         <img class="avatar" src="{avatar_url}" alt="{name}" onerror="this.style.display='none'">
         <div class="author-info">
@@ -1726,7 +2073,8 @@ TWEET_TEMPLATE = """
             </div>
         </div>
     </div>
-    <div class="tweet-text">{text}</div>
+    <div class="tweet-text{text_modifier_class}">{text}</div>
+    {article_html}
     {media_html}
     {quoted_tweet_html}
     {categories_html}
@@ -1744,8 +2092,44 @@ TWEET_TEMPLATE = """
 """
 
 
+_CAROUSEL_SEQ = 0
+
+
+def _next_carousel_id() -> str:
+    global _CAROUSEL_SEQ
+    _CAROUSEL_SEQ += 1
+    return f"carousel-{_CAROUSEL_SEQ}"
+
+
+def _wrap_carousel(items_html: list[str]) -> str:
+    """Wrap a list of item-HTML snippets in a carousel (or plain container if single).
+
+    Items must be self-contained `<img>`, `<video>`, or `<a>` blocks.
+    """
+    if not items_html:
+        return ""
+    if len(items_html) == 1:
+        return '<div class="tweet-media">' + items_html[0] + '</div>'
+
+    cid = _next_carousel_id()
+    dots = "".join(
+        f'<span class="{"active" if i == 0 else ""}"></span>'
+        for i in range(len(items_html))
+    )
+    track = "\n".join(items_html)
+    return (
+        f'<div class="tweet-carousel" data-carousel-id="{cid}">'
+        f'<div class="carousel-track" id="{cid}">{track}</div>'
+        f'<div class="carousel-count">1 / {len(items_html)}</div>'
+        f'<div class="carousel-dots">{dots}</div>'
+        f'<button class="carousel-nav prev" type="button" aria-label="Previous">&lsaquo;</button>'
+        f'<button class="carousel-nav next" type="button" aria-label="Next">&rsaquo;</button>'
+        f'</div>'
+    )
+
+
 def render_media_html(tweet_id: str, media_dir: Path) -> str:
-    """Render HTML for tweet media using local files"""
+    """Render HTML for tweet media using local files."""
     tweet_media_dir = media_dir / tweet_id
     if not tweet_media_dir.exists():
         return ""
@@ -1754,26 +2138,24 @@ def render_media_html(tweet_id: str, media_dir: Path) -> str:
     if not media_files:
         return ""
 
-    html_parts = ['<div class="tweet-media">']
+    items: list[str] = []
     for media_file in media_files:
-        # Skip thumbnail files
         if media_file.name.startswith("thumb_"):
             continue
 
         rel_path = f"../../media/{tweet_id}/{media_file.name}"
-        if media_file.suffix.lower() in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
-            html_parts.append(f'<img src="{rel_path}" alt="Tweet media" loading="lazy">')
-        elif media_file.suffix.lower() in [".mp4", ".webm", ".mov"]:
-            # Check for thumbnail
+        ext = media_file.suffix.lower()
+        if ext in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
+            items.append(f'<img src="{rel_path}" alt="Tweet media" loading="lazy">')
+        elif ext in [".mp4", ".webm", ".mov"]:
             thumb_path = tweet_media_dir / f"thumb_{media_file.stem}.jpg"
             if thumb_path.exists():
                 poster_rel = f"../../media/{tweet_id}/thumb_{media_file.stem}.jpg"
-                html_parts.append(f'<video src="{rel_path}" poster="{poster_rel}" controls preload="none"></video>')
+                items.append(f'<video src="{rel_path}" poster="{poster_rel}" controls preload="none"></video>')
             else:
-                html_parts.append(f'<video src="{rel_path}" controls preload="metadata"></video>')
-    html_parts.append('</div>')
+                items.append(f'<video src="{rel_path}" controls preload="metadata"></video>')
 
-    return "\n".join(html_parts) if len(html_parts) > 2 else ""
+    return _wrap_carousel(items)
 
 
 def render_media_html_server(tweet_id: str, media_dir: Path) -> str:
@@ -1788,27 +2170,24 @@ def render_media_html_server(tweet_id: str, media_dir: Path) -> str:
     if not media_files:
         return ""
 
-    html_parts = ['<div class="tweet-media">']
+    items: list[str] = []
     for media_file in media_files:
-        # Skip thumbnail files
         if media_file.name.startswith("thumb_"):
             continue
 
-        # Absolute path for server - nginx serves /media/bookmarks/ from /app/bookmarks-media/
         abs_path = f"/media/bookmarks/{tweet_id}/{media_file.name}"
-        if media_file.suffix.lower() in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
-            html_parts.append(f'<img src="{abs_path}" alt="Tweet media" loading="lazy">')
-        elif media_file.suffix.lower() in [".mp4", ".webm", ".mov"]:
-            # Check for thumbnail
+        ext = media_file.suffix.lower()
+        if ext in [".jpg", ".jpeg", ".png", ".gif", ".webp"]:
+            items.append(f'<img src="{abs_path}" alt="Tweet media" loading="lazy">')
+        elif ext in [".mp4", ".webm", ".mov"]:
             thumb_path = tweet_media_dir / f"thumb_{media_file.stem}.jpg"
             if thumb_path.exists():
                 poster_abs = f"/media/bookmarks/{tweet_id}/thumb_{media_file.stem}.jpg"
-                html_parts.append(f'<video src="{abs_path}" poster="{poster_abs}" controls preload="none"></video>')
+                items.append(f'<video src="{abs_path}" poster="{poster_abs}" controls preload="none"></video>')
             else:
-                html_parts.append(f'<video src="{abs_path}" controls preload="metadata"></video>')
-    html_parts.append('</div>')
+                items.append(f'<video src="{abs_path}" controls preload="metadata"></video>')
 
-    return "\n".join(html_parts) if len(html_parts) > 2 else ""
+    return _wrap_carousel(items)
 
 
 def render_media_html_cdn(bookmark: dict) -> str:
@@ -1828,28 +2207,28 @@ def render_media_html_cdn(bookmark: dict) -> str:
     if not urls:
         return ""
 
-    html_parts = ['<div class="tweet-media">']
+    items: list[str] = []
     for i, url in enumerate(urls):
         media_type = types[i] if i < len(types) else ""
         if media_type == "video" or any(ext in url.lower() for ext in ['.mp4', '.webm', '.mov']):
-            # Video: show thumbnail placeholder with play button linking to tweet
-            html_parts.append(f'''<a href="{tweet_url}" target="_blank" class="video-thumbnail" title="View video on X">
-    <div class="video-placeholder">
-        <span class="play-icon">▶</span>
-        <span class="video-label">Video - View on X</span>
-    </div>
-</a>''')
+            items.append(
+                f'<a href="{tweet_url}" target="_blank" class="video-thumbnail" title="View video on X">'
+                '<div class="video-placeholder">'
+                '<span class="play-icon">&#9654;</span>'
+                '<span class="video-label">Video - View on X</span>'
+                '</div></a>'
+            )
         else:
-            html_parts.append(f'<img src="{url}" alt="Tweet media" loading="lazy">')
-    html_parts.append('</div>')
+            items.append(f'<img src="{url}" alt="Tweet media" loading="lazy">')
 
-    return "\n".join(html_parts) if len(html_parts) > 2 else ""
+    return _wrap_carousel(items)
 
 
 def generate_tweets_json(bookmarks: list[dict], categories_data: dict | None,
                          media_mode: str = "local",
                          articles_index: dict | None = None,
-                         thread_index: dict | None = None) -> list[dict]:
+                         thread_index: dict | None = None,
+                         articles_cache: dict | None = None) -> list[dict]:
     """Generate JSON data for tweets, suitable for infinite scroll.
 
     media_mode: "local" (relative paths), "server" (absolute /media/bookmarks/), "cdn" (Twitter CDN)
@@ -1951,12 +2330,17 @@ def generate_tweets_json(bookmarks: list[dict], categories_data: dict | None,
             first_image = next((m for m in media if m["type"] == "image"), None)
             card_media = [first_image] if first_image else media[:1]
 
+        full_text = bookmark.get("Full Text", "")
+        article_match = ARTICLE_URL_PATTERN.search(full_text)
+        article_url = article_match.group(0) if article_match else ""
+        display_text = (full_text[:article_match.start()] + full_text[article_match.end():]).strip() if article_match else full_text
+
         tweet_data = {
             "id": tweet_id,
             "author": f"@{bookmark.get('User Screen Name', 'unknown')}",
             "author_name": bookmark.get("User Name", "Unknown"),
             "avatar": bookmark.get("User Avatar Url", ""),
-            "text": bookmark.get("Full Text", ""),
+            "text": display_text,
             "date": date_iso,
             "date_display": date_display,
             "media": card_media,
@@ -1970,6 +2354,17 @@ def generate_tweets_json(bookmarks: list[dict], categories_data: dict | None,
             tweet_data["thread_length"] = thread_len
         if article:
             tweet_data["article"] = article
+        elif article_url:
+            tweet_data["article_url"] = article_url
+            # Attach OG metadata for enriched link card when available
+            if articles_cache and article_match:
+                og = articles_cache.get(article_match.group(1))
+                if og and (og.get("title") or og.get("excerpt") or og.get("image")):
+                    tweet_data["article_og"] = {
+                        "title": og.get("title", ""),
+                        "excerpt": og.get("excerpt", ""),
+                        "image": og.get("image", ""),
+                    }
         tweets_data.append(tweet_data)
 
     return tweets_data
@@ -2011,7 +2406,9 @@ def render_quoted_tweet_html(bookmark: dict, quoted_tweets_cache: dict | None) -
 def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
                       include_detail_link: bool = True, use_cdn: bool = False,
                       use_server: bool = False, quoted_tweets: dict | None = None,
-                      suppress_media: bool = False) -> str:
+                      suppress_media: bool = False,
+                      articles_cache: dict | None = None,
+                      full_text: bool = False) -> str:
     """Render a tweet card HTML.
 
     Media rendering modes:
@@ -2064,12 +2461,17 @@ def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
     # Render quoted tweets
     quoted_tweet_html = render_quoted_tweet_html(bookmark, quoted_tweets)
 
+    if articles_cache is None:
+        articles_cache = load_articles_cache()
+    text_html, article_html = process_tweet_text(bookmark.get("Full Text", ""), articles_cache)
+
     return TWEET_TEMPLATE.format(
         tweet_id=tweet_id,
         avatar_url=bookmark.get("User Avatar Url", ""),
         name=bookmark.get("User Name", "Unknown"),
         screen_name=bookmark.get("User Screen Name", "unknown"),
-        text=bookmark.get("Full Text", ""),
+        text=text_html,
+        article_html=article_html,
         media_html=media_html,
         quoted_tweet_html=quoted_tweet_html,
         categories_html=categories_html,
@@ -2078,6 +2480,8 @@ def render_tweet_card(bookmark: dict, categories_data: dict | None = None,
         replies=bookmark.get("Reply Count", 0),
         date=formatted_date,
         detail_link=detail_link,
+        card_modifier_class=" tweet-card-full" if full_text else "",
+        text_modifier_class=" tweet-text-full" if full_text else "",
         search_text=bookmark.get("Full Text", "").lower().replace('"', '&quot;')[:500]
     )
 
@@ -3071,15 +3475,16 @@ def cmd_generate(args: argparse.Namespace) -> None:
         screen_name = bookmark.get("User Screen Name", "unknown")
         is_thread = thread_index and tweet_id in thread_index and len(thread_index[tweet_id]) > 1
         tweet_html = render_tweet_card(bookmark, categories_data, include_detail_link=False,
-                                       quoted_tweets=quoted_tweets, suppress_media=is_thread)
+                                       quoted_tweets=quoted_tweets, suppress_media=is_thread,
+                                       full_text=True)
 
-        # Build detail sections
-        detail_sections = []
+        # Main column content (tweet + thread)
+        main_parts = [tweet_html]
 
-        # Thread section - render full thread from birdmarks cache
+        # Thread section - render full thread from birdmarks cache (stays in main column)
         thread_tweets = thread_index.get(tweet_id, []) if thread_index else []
         if len(thread_tweets) > 1:
-            thread_parts = [f'<div class="detail-section"><h2>🧵 Full Thread ({len(thread_tweets)} tweets)</h2>']
+            thread_parts = [f'<div class="detail-section" id="thread"><h2>🧵 Full Thread ({len(thread_tweets)} tweets)</h2>']
             for i, tt in enumerate(thread_tweets):
                 thread_parts.append(f'<div class="thread-tweet">')
                 thread_parts.append(f'<div class="thread-tweet-number">{i + 1}/{len(thread_tweets)}</div>')
@@ -3103,31 +3508,49 @@ def cmd_generate(args: argparse.Namespace) -> None:
                     thread_parts.append('</div>')
                 thread_parts.append('</div>')
             thread_parts.append('</div>')
-            detail_sections.append(''.join(thread_parts))
+            main_parts.append(''.join(thread_parts))
 
-        # Author info section
+        main_html = "".join(main_parts)
+
+        # Info rail sections (right column, sticky)
+        rail_sections = []
+
+        # About the author
         user_desc = bookmark.get("User Description", "")
         user_location = bookmark.get("User Location", "")
         user_followers = bookmark.get("User Followers Count", "")
         user_verified = bookmark.get("User Is Blue Verified", "")
-        if user_desc or user_location or user_followers:
-            author_info_parts = []
-            if user_desc:
-                author_info_parts.append(f'<p>{user_desc}</p>')
-            meta_parts = []
-            if user_location:
-                meta_parts.append(f'📍 {user_location}')
-            if user_followers:
-                meta_parts.append(f'{user_followers} followers')
-            if user_verified:
-                meta_parts.append('✓ Verified')
-            if meta_parts:
-                author_info_parts.append(f'<p class="meta">{" · ".join(meta_parts)}</p>')
-            # Link to author page if it exists
-            author_info_parts.append(f'<p><a href="../authors/{screen_name}.html">All bookmarks by @{screen_name}</a></p>')
-            detail_sections.append(f'<div class="detail-section"><h2>About @{screen_name}</h2>{"".join(author_info_parts)}</div>')
+        verified_badge = ' <span style="color:#1d9bf0">✓</span>' if user_verified else ''
+        author_avatar = bookmark.get("User Avatar Url", "")
+        author_name = bookmark.get("User Name", screen_name)
+        author_body = []
+        author_body.append(
+            '<div class="author-top">'
+            f'<img class="avatar" src="{author_avatar}" alt="{author_name}" onerror="this.style.display=\'none\'">'
+            '<div>'
+            f'<div class="author-name">{author_name}{verified_badge}</div>'
+            f'<div class="author-handle">@{screen_name}</div>'
+            '</div>'
+            '</div>'
+        )
+        if user_desc:
+            author_body.append(f'<div class="author-desc">{user_desc}</div>')
+        meta_bits = []
+        if user_location:
+            meta_bits.append(f'📍 {user_location}')
+        if user_followers:
+            meta_bits.append(f'{user_followers} followers')
+        if meta_bits:
+            author_body.append(f'<div class="author-meta-compact">{" · ".join(meta_bits)}</div>')
+        author_body.append(f'<div class="author-actions"><a href="../authors/{screen_name}.html">All bookmarks by @{screen_name} &rarr;</a></div>')
+        rail_sections.append(
+            '<section class="detail-section" id="about-author">'
+            '<h2>About the author</h2>'
+            f'{"".join(author_body)}'
+            '</section>'
+        )
 
-        # Categories section with descriptions
+        # Categories with descriptions
         if categories_data:
             tweet_cats = categories_data.get("tweet_categories", {}).get(tweet_id, [])
             if tweet_cats:
@@ -3136,32 +3559,29 @@ def cmd_generate(args: argparse.Namespace) -> None:
                     cat_info = categories_data.get("categories", {}).get(cat_id, {})
                     cat_name = cat_info.get("name", cat_id)
                     cat_desc = cat_info.get("description", "")
+                    cat_desc_html = f'<div class="cat-desc">{cat_desc}</div>' if cat_desc else ""
                     cat_parts.append(
-                        f'<div class="detail-category">'
+                        '<div class="cat-detail">'
                         f'<a href="../categories/{cat_id}.html" class="category-tag">{cat_name}</a>'
-                        f'{f" — {cat_desc}" if cat_desc else ""}'
-                        f'</div>'
+                        f'{cat_desc_html}'
+                        '</div>'
                     )
-                detail_sections.append(f'<div class="detail-section"><h2>Categories</h2>{"".join(cat_parts)}</div>')
+                rail_sections.append(
+                    '<section class="detail-section" id="categories">'
+                    '<h2>Categories</h2>'
+                    f'{"".join(cat_parts)}'
+                    '</section>'
+                )
 
-        # Scraped at / bookmarked info
-        scraped_at = bookmark.get("Scraped At", "")
-        if scraped_at:
-            try:
-                scraped_dt = datetime.fromisoformat(scraped_at)
-                scraped_formatted = scraped_dt.strftime("%b %d, %Y at %H:%M")
-            except (ValueError, TypeError):
-                scraped_formatted = scraped_at
-            detail_sections.append(f'<div class="detail-section"><h2>Bookmark Info</h2><p class="meta">Bookmarked: {scraped_formatted}</p></div>')
-
-        # Other tweets by this author
+        # More by author
         other_tweets = [b for b in author_tweets.get(screen_name, []) if b.get("Tweet Id") != tweet_id]
         if other_tweets:
             other_items = []
-            for other in other_tweets[:10]:
+            for other in other_tweets[:6]:
                 other_id = other.get("Tweet Id", "")
-                other_text = other.get("Full Text", "")[:120]
-                if len(other.get("Full Text", "")) > 120:
+                other_text_full = other.get("Full Text", "")
+                other_text = other_text_full[:120]
+                if len(other_text_full) > 120:
                     other_text += "..."
                 other_date = other.get("Created At", "")
                 try:
@@ -3170,27 +3590,98 @@ def cmd_generate(args: argparse.Namespace) -> None:
                 except ValueError:
                     other_formatted = other_date
                 other_items.append(
-                    f'<div class="other-tweet">'
-                    f'<a href="{other_id}.html">{other_text}</a>'
-                    f'<span class="meta"> — {other_formatted}</span>'
-                    f'</div>'
+                    f'<a class="other-tweet" href="{other_id}.html">'
+                    f'<div class="other-text">{html_lib.escape(other_text)}</div>'
+                    f'<div class="other-meta">{other_formatted}</div>'
+                    '</a>'
                 )
-            more_text = f'<p><a href="../authors/{screen_name}.html">View all {len(other_tweets)} bookmarks by @{screen_name}</a></p>' if len(other_tweets) > 10 else ""
-            detail_sections.append(f'<div class="detail-section"><h2>More by @{screen_name} ({len(other_tweets)})</h2>{"".join(other_items)}{more_text}</div>')
+            more_link = ""
+            if len(other_tweets) > 6:
+                more_link = f'<div class="rail-more"><a href="../authors/{screen_name}.html">View all {len(other_tweets)} &rarr;</a></div>'
+            rail_sections.append(
+                f'<section class="detail-section" id="more-by-author">'
+                f'<h2>More by @{screen_name}</h2>'
+                f'{"".join(other_items)}'
+                f'{more_link}'
+                '</section>'
+            )
 
-        detail_html = "".join(detail_sections)
+        # Bookmark info
+        scraped_at = bookmark.get("Scraped At", "")
+        if scraped_at:
+            try:
+                scraped_dt = datetime.fromisoformat(scraped_at)
+                scraped_formatted = scraped_dt.strftime("%b %d, %Y at %H:%M")
+            except (ValueError, TypeError):
+                scraped_formatted = scraped_at
+            rail_sections.append(
+                '<section class="detail-section" id="bookmark-info">'
+                '<h2>Bookmark info</h2>'
+                f'<div class="meta">Bookmarked {scraped_formatted}</div>'
+                '</section>'
+            )
 
-        content = f"""<h1>Tweet by @{screen_name}</h1>
-{tweet_html}
+        rail_html = "".join(rail_sections)
+
+        content = f"""<div class="detail-container">
+<div class="detail-main">
+<h1>Tweet by @{screen_name}</h1>
+{main_html}
+</div>
+<aside class="detail-rail">
+{rail_html}
+</aside>
+</div>
 <style>
-.detail-section {{ margin-top: 20px; padding: 15px; background: var(--card-bg); border-radius: 12px; }}
-.detail-section h2 {{ font-size: 1.1em; margin-bottom: 10px; }}
-.detail-category {{ margin-bottom: 8px; }}
-.other-tweet {{ padding: 8px 0; border-bottom: 1px solid var(--border); }}
+body:has(.detail-container) {{ max-width: 1200px; }}
+.detail-container {{
+    display: grid; grid-template-columns: minmax(0, 1fr) 320px;
+    gap: 20px; align-items: start; max-width: 1200px; margin: 0 auto;
+}}
+.detail-main {{ min-width: 0; }}
+.detail-rail {{
+    position: sticky; top: 20px;
+    display: flex; flex-direction: column; gap: 14px;
+}}
+@media (max-width: 900px) {{
+    .detail-container {{ grid-template-columns: 1fr; }}
+    .detail-rail {{ position: static; }}
+}}
+.detail-section {{
+    background: var(--card-bg); border: 1px solid var(--border);
+    border-radius: 14px; padding: 14px;
+}}
+.detail-section h2 {{
+    font-size: 0.78em; color: var(--secondary); font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.05em;
+    margin: 0 0 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border);
+}}
+.author-top {{ display: flex; gap: 10px; align-items: center; margin-bottom: 10px; }}
+.author-top .avatar {{ width: 44px; height: 44px; margin: 0; }}
+.author-desc {{ font-size: 0.85em; color: var(--text); margin-bottom: 8px; line-height: 1.4; }}
+.author-meta-compact {{ color: var(--secondary); font-size: 0.78em; margin-bottom: 10px; }}
+.author-actions {{ font-size: 0.85em; }}
+.cat-detail {{ margin-bottom: 10px; }}
+.cat-detail:last-child {{ margin-bottom: 0; }}
+.cat-desc {{ color: var(--secondary); font-size: 0.82em; margin-top: 6px; line-height: 1.4; }}
+.other-tweet {{
+    display: block; padding: 8px 0; border-bottom: 1px solid var(--border);
+    color: inherit; text-decoration: none;
+}}
 .other-tweet:last-child {{ border-bottom: none; }}
-.other-tweet a {{ display: inline; }}
+.other-tweet:hover {{ background: rgba(255,255,255,0.02); }}
+.other-tweet .other-text {{
+    color: var(--text); font-size: 0.85em; line-height: 1.35;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}}
+.other-tweet .other-meta {{ color: var(--secondary); font-size: 0.72em; margin-top: 2px; }}
+.rail-more {{ margin-top: 10px; font-size: 0.85em; }}
+.thread-tweet {{ padding: 12px 0; border-bottom: 1px solid var(--border); }}
+.thread-tweet:last-child {{ border-bottom: none; }}
+.thread-tweet-number {{ color: var(--secondary); font-size: 0.85em; margin-bottom: 4px; }}
+.thread-tweet-text {{ white-space: pre-wrap; word-break: break-word; }}
 </style>
-{detail_html}"""
+"""
 
         page_html = HTML_BASE.format(
             title=f"Tweet by @{screen_name}",
@@ -3208,7 +3699,8 @@ def cmd_generate(args: argparse.Namespace) -> None:
     data_dir.mkdir(exist_ok=True)
 
     tweets_json = generate_tweets_json(bookmarks, categories_data, media_mode="local",
-                                       thread_index=thread_index)
+                                       thread_index=thread_index,
+                                       articles_cache=load_articles_cache())
 
     # Split into chunks of 100 tweets each
     CHUNK_SIZE = 100
@@ -3276,9 +3768,35 @@ async function init() {{
         setupInfiniteScroll();
         setupSearch();
         setupFuzzyToggle();
+        await scrollToHashTarget();
     }} catch (e) {{
         console.error('Failed to load tweets:', e);
         document.getElementById('loading-indicator').textContent = 'Failed to load tweets';
+    }}
+}}
+
+async function scrollToHashTarget() {{
+    const hash = window.location.hash;
+    if (!hash || !hash.startsWith('#tweet-')) return;
+    const targetId = hash.slice(1);
+    const wanted = targetId.replace('tweet-', '');
+    const targetIdx = filteredTweets.findIndex(t => String(t.id) === String(wanted));
+    if (targetIdx < 0) return;
+    let guard = 200;
+    while (displayedCount <= targetIdx && guard-- > 0) {{
+        if (displayedCount >= filteredTweets.length && loadedChunks < tweetsMeta.chunks) {{
+            await loadNextChunk();
+            filteredTweets = allTweets;
+        }}
+        isLoading = false;
+        loadMoreTweets();
+        await new Promise(r => setTimeout(r, 20));
+    }}
+    const el = document.getElementById(targetId);
+    if (el) {{
+        el.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+        el.classList.add('tweet-card-highlight');
+        setTimeout(() => el.classList.remove('tweet-card-highlight'), 2500);
     }}
 }}
 
@@ -3325,6 +3843,8 @@ function loadMoreTweets() {{
     }});
 
     container.appendChild(fragment);
+    if (typeof setupCarousels === 'function') setupCarousels(container);
+    if (typeof setupTruncation === 'function') setupTruncation(container);
     displayedCount += batch.length;
     isLoading = false;
     updateShownCount();
@@ -3475,15 +3995,53 @@ function filterTweets(query) {{
     }}
 }}
 
+function renderArticleLinkCard(articleUrl, articleData) {{
+    if (!articleUrl) return '';
+    if (articleData && (articleData.title || articleData.image || articleData.excerpt)) {{
+        const image = articleData.image || '';
+        const title = articleData.title || 'Article on X';
+        const excerpt = articleData.excerpt || '';
+        const imageHtml = image
+            ? `<div class="article-image" style="background-image:url('${{escapeHtml(image)}}');"></div>`
+            : '';
+        const excerptHtml = excerpt
+            ? `<div class="article-excerpt">${{escapeHtml(excerpt)}}</div>`
+            : '';
+        return `<div class="article-card article-link-card article-rich">
+            <a class="article-rich-link" href="${{escapeHtml(articleUrl)}}" target="_blank" rel="noopener">
+                ${{imageHtml}}
+                <div class="article-rich-body">
+                    <div class="article-source">&#128196; Article on X</div>
+                    <div class="article-title">${{escapeHtml(title)}}</div>
+                    ${{excerptHtml}}
+                </div>
+            </a>
+        </div>`;
+    }}
+    return `<div class="article-card article-link-card">
+        <a class="article-header" href="${{escapeHtml(articleUrl)}}" target="_blank" rel="noopener">
+            <div class="article-icon">&#128196;</div>
+            <div class="article-meta">
+                <div class="article-title">Read article on X</div>
+                <div class="article-excerpt">${{escapeHtml(articleUrl)}}</div>
+            </div>
+            <div class="article-toggle">&#8599;</div>
+        </a>
+    </div>`;
+}}
+
 function renderTweetCard(tweet) {{
     const card = document.createElement('article');
     card.className = 'tweet-card';
+    card.id = `tweet-${{tweet.id}}`;
+    card.dataset.tweetId = tweet.id;
 
     const categoriesHtml = tweet.categories.map(c =>
         `<a href="${{CATEGORIES_PATH}}${{c.id}}.html" class="category-tag">${{c.name}}</a>`
     ).join(' ');
 
     const mediaHtml = renderMedia(tweet.media, tweet.tweet_url);
+    const articleHtml = renderArticleLinkCard(tweet.article_url, tweet.article);
     const threadBadge = tweet.thread_length > 1
         ? `<a href="tweets/${{tweet.id}}.html" class="thread-badge">🧵 Thread (${{tweet.thread_length}} tweets)</a>`
         : '';
@@ -3500,6 +4058,7 @@ function renderTweetCard(tweet) {{
         </div>
         ${{threadBadge}}
         <div class="tweet-text">${{escapeHtml(tweet.text)}}</div>
+        ${{articleHtml}}
         ${{mediaHtml}}
         ${{categoriesHtml ? `<div class="tweet-categories">${{categoriesHtml}}</div>` : ''}}
         <div class="tweet-stats">
@@ -3518,27 +4077,57 @@ function renderTweetCard(tweet) {{
 
 function renderMedia(media, tweetUrl) {{
     if (!media || media.length === 0) return '';
-    const items = media.map((m, idx) => {{
+    const parts = media.map((m, idx) => {{
         if (m.type === 'video') {{
             if (m.src && !m.src.startsWith('http')) {{
-                // Show clickable thumbnail that loads video on click
                 if (m.poster) {{
                     const uniqueId = `video-${{Date.now()}}-${{idx}}`;
                     return `<div class="video-thumbnail-wrapper" id="${{uniqueId}}" onclick="loadVideo(this, '${{m.src}}', '${{m.poster}}')">
                         <img src="${{m.poster}}" alt="Video thumbnail" class="video-thumb" loading="lazy">
-                        <div class="video-play-overlay"><span class="play-icon">▶</span></div>
+                        <div class="video-play-overlay"><span class="play-icon">&#9654;</span></div>
                     </div>`;
                 }}
                 return `<video src="${{m.src}}" controls preload="metadata"></video>`;
             }}
-            // CDN video - show placeholder
             return `<a href="${{tweetUrl}}" target="_blank" class="video-thumbnail" title="View video on X">
-                <div class="video-placeholder"><span class="play-icon">▶</span><span class="video-label">Video - View on X</span></div>
+                <div class="video-placeholder"><span class="play-icon">&#9654;</span><span class="video-label">Video - View on X</span></div>
             </a>`;
         }}
         return `<img src="${{m.src}}" alt="Tweet media" loading="lazy">`;
-    }}).join('');
-    return `<div class="tweet-media">${{items}}</div>`;
+    }});
+    if (parts.length === 1) return `<div class="tweet-media">${{parts[0]}}</div>`;
+    const cid = `carousel-js-${{Date.now()}}-${{Math.floor(Math.random() * 1e6)}}`;
+    const dots = parts.map((_, i) => `<span class="${{i === 0 ? 'active' : ''}}"></span>`).join('');
+    return `<div class="tweet-carousel" data-carousel-id="${{cid}}">
+        <div class="carousel-track" id="${{cid}}">${{parts.join('')}}</div>
+        <div class="carousel-count">1 / ${{parts.length}}</div>
+        <div class="carousel-dots">${{dots}}</div>
+        <button class="carousel-nav prev" type="button" aria-label="Previous">&lsaquo;</button>
+        <button class="carousel-nav next" type="button" aria-label="Next">&rsaquo;</button>
+    </div>`;
+}}
+
+function setupCarousels(root) {{
+    const scope = root || document;
+    scope.querySelectorAll('.tweet-carousel').forEach(car => {{
+        if (car.dataset.init === '1') return;
+        car.dataset.init = '1';
+        const track = car.querySelector('.carousel-track');
+        const dots = car.querySelectorAll('.carousel-dots span');
+        const count = car.querySelector('.carousel-count');
+        const prev = car.querySelector('.carousel-nav.prev');
+        const next = car.querySelector('.carousel-nav.next');
+        if (!track) return;
+        const total = dots.length;
+        const update = () => {{
+            const idx = Math.round(track.scrollLeft / track.clientWidth);
+            dots.forEach((d, i) => d.classList.toggle('active', i === idx));
+            if (count) count.textContent = `${{idx + 1}} / ${{total}}`;
+        }};
+        track.addEventListener('scroll', update, {{ passive: true }});
+        if (prev) prev.addEventListener('click', () => track.scrollBy({{ left: -track.clientWidth, behavior: 'smooth' }}));
+        if (next) next.addEventListener('click', () => track.scrollBy({{ left: track.clientWidth, behavior: 'smooth' }}));
+    }});
 }}
 
 function loadVideo(wrapper, src, poster) {{
@@ -3557,6 +4146,33 @@ function escapeHtml(text) {{
     div.textContent = text;
     return div.innerHTML;
 }}
+
+function setupTruncation(root) {{
+    const scope = root || document;
+    const MAX_HEIGHT = 13 * 16; /* 13em at 16px base */
+    scope.querySelectorAll('.tweet-text').forEach(el => {{
+        if (el.classList.contains('tweet-text-full')) return;
+        if (el.dataset.truncInit === '1') return;
+        el.dataset.truncInit = '1';
+        if (el.scrollHeight > MAX_HEIGHT + 16) {{
+            el.classList.add('truncated');
+            const btn = document.createElement('button');
+            btn.className = 'show-more-btn';
+            btn.type = 'button';
+            btn.textContent = 'Show more';
+            btn.addEventListener('click', () => {{
+                const isCollapsed = el.classList.toggle('truncated');
+                btn.textContent = isCollapsed ? 'Show more' : 'Show less';
+            }});
+            el.insertAdjacentElement('afterend', btn);
+        }}
+    }});
+}}
+
+document.addEventListener('DOMContentLoaded', () => {{
+    setupCarousels(document);
+    setupTruncation(document);
+}});
 </script>
 """
 
@@ -5041,7 +5657,8 @@ def generate_html_server(output_dir: Path, bookmarks: list[dict], categories_dat
 
     tweets_json = generate_tweets_json(sorted_bookmarks, categories_data, media_mode="server",
                                        articles_index=articles_summary if articles_summary else None,
-                                       thread_index=thread_index)
+                                       thread_index=thread_index,
+                                       articles_cache=load_articles_cache())
 
     # Split into chunks of 100 tweets each for lazy loading
     CHUNK_SIZE = 100
@@ -5110,9 +5727,35 @@ async function init() {{
         setupInfiniteScroll();
         setupSearch();
         setupFuzzyToggle();
+        await scrollToHashTarget();
     }} catch (e) {{
         console.error('Failed to load tweets:', e);
         document.getElementById('loading-indicator').textContent = 'Failed to load tweets';
+    }}
+}}
+
+async function scrollToHashTarget() {{
+    const hash = window.location.hash;
+    if (!hash || !hash.startsWith('#tweet-')) return;
+    const targetId = hash.slice(1);
+    const wanted = targetId.replace('tweet-', '');
+    const targetIdx = filteredTweets.findIndex(t => String(t.id) === String(wanted));
+    if (targetIdx < 0) return;
+    let guard = 200;
+    while (displayedCount <= targetIdx && guard-- > 0) {{
+        if (displayedCount >= filteredTweets.length && loadedChunks < tweetsMeta.chunks) {{
+            await loadNextChunk();
+            filteredTweets = allTweets;
+        }}
+        isLoading = false;
+        loadMoreTweets();
+        await new Promise(r => setTimeout(r, 20));
+    }}
+    const el = document.getElementById(targetId);
+    if (el) {{
+        el.scrollIntoView({{ behavior: 'smooth', block: 'start' }});
+        el.classList.add('tweet-card-highlight');
+        setTimeout(() => el.classList.remove('tweet-card-highlight'), 2500);
     }}
 }}
 
@@ -5159,6 +5802,8 @@ function loadMoreTweets() {{
     }});
 
     container.appendChild(fragment);
+    if (typeof setupCarousels === 'function') setupCarousels(container);
+    if (typeof setupTruncation === 'function') setupTruncation(container);
     displayedCount += batch.length;
     isLoading = false;
     updateShownCount();
@@ -5324,6 +5969,41 @@ function renderArticleCard(article, tweetId) {{
     </div>`;
 }}
 
+function renderArticleLinkCard(articleUrl, articleData) {{
+    if (!articleUrl) return '';
+    if (articleData && (articleData.title || articleData.image || articleData.excerpt)) {{
+        const image = articleData.image || '';
+        const title = articleData.title || 'Article on X';
+        const excerpt = articleData.excerpt || '';
+        const imageHtml = image
+            ? `<div class="article-image" style="background-image:url('${{escapeHtml(image)}}');"></div>`
+            : '';
+        const excerptHtml = excerpt
+            ? `<div class="article-excerpt">${{escapeHtml(excerpt)}}</div>`
+            : '';
+        return `<div class="article-card article-link-card article-rich">
+            <a class="article-rich-link" href="${{escapeHtml(articleUrl)}}" target="_blank" rel="noopener">
+                ${{imageHtml}}
+                <div class="article-rich-body">
+                    <div class="article-source">&#128196; Article on X</div>
+                    <div class="article-title">${{escapeHtml(title)}}</div>
+                    ${{excerptHtml}}
+                </div>
+            </a>
+        </div>`;
+    }}
+    return `<div class="article-card article-link-card">
+        <a class="article-header" href="${{escapeHtml(articleUrl)}}" target="_blank" rel="noopener">
+            <div class="article-icon">&#128196;</div>
+            <div class="article-meta">
+                <div class="article-title">Read article on X</div>
+                <div class="article-excerpt">${{escapeHtml(articleUrl)}}</div>
+            </div>
+            <div class="article-toggle">&#8599;</div>
+        </a>
+    </div>`;
+}}
+
 async function toggleArticle(tweetId) {{
     const body = document.getElementById(`article-body-${{tweetId}}`);
     const card = document.getElementById(`article-${{tweetId}}`);
@@ -5354,13 +6034,17 @@ async function toggleArticle(tweetId) {{
 function renderTweetCard(tweet) {{
     const card = document.createElement('article');
     card.className = 'tweet-card';
+    card.id = `tweet-${{tweet.id}}`;
+    card.dataset.tweetId = tweet.id;
 
     const categoriesHtml = tweet.categories.map(c =>
         `<a href="${{CATEGORIES_PATH}}${{c.id}}.html" class="category-tag">${{c.name}}</a>`
     ).join(' ');
 
     const mediaHtml = renderMedia(tweet.media, tweet.tweet_url);
-    const articleHtml = renderArticleCard(tweet.article, tweet.id);
+    const articleHtml = tweet.article
+        ? renderArticleCard(tweet.article, tweet.id)
+        : renderArticleLinkCard(tweet.article_url, tweet.article_og);
     const threadBadge = tweet.thread_length > 1
         ? `<a href="/tweets/${{tweet.id}}.html" class="thread-badge">🧵 Thread (${{tweet.thread_length}} tweets)</a>`
         : '';
@@ -5396,22 +6080,80 @@ function renderTweetCard(tweet) {{
 
 function renderMedia(media, tweetUrl) {{
     if (!media || media.length === 0) return '';
-    const items = media.map((m, idx) => {{
+    const parts = media.map((m, idx) => {{
         if (m.type === 'video') {{
-            // Show clickable thumbnail that loads video on click
             if (m.poster) {{
                 const uniqueId = `video-${{Date.now()}}-${{idx}}`;
                 return `<div class="video-thumbnail-wrapper" id="${{uniqueId}}" onclick="loadVideo(this, '${{m.src}}', '${{m.poster}}')">
                     <img src="${{m.poster}}" alt="Video thumbnail" class="video-thumb" loading="lazy">
-                    <div class="video-play-overlay"><span class="play-icon">▶</span></div>
+                    <div class="video-play-overlay"><span class="play-icon">&#9654;</span></div>
                 </div>`;
             }}
             return `<video src="${{m.src}}" controls preload="metadata"></video>`;
         }}
         return `<img src="${{m.src}}" alt="Tweet media" loading="lazy">`;
-    }}).join('');
-    return `<div class="tweet-media">${{items}}</div>`;
+    }});
+    if (parts.length === 1) return `<div class="tweet-media">${{parts[0]}}</div>`;
+    const cid = `carousel-js-${{Date.now()}}-${{Math.floor(Math.random() * 1e6)}}`;
+    const dots = parts.map((_, i) => `<span class="${{i === 0 ? 'active' : ''}}"></span>`).join('');
+    return `<div class="tweet-carousel" data-carousel-id="${{cid}}">
+        <div class="carousel-track" id="${{cid}}">${{parts.join('')}}</div>
+        <div class="carousel-count">1 / ${{parts.length}}</div>
+        <div class="carousel-dots">${{dots}}</div>
+        <button class="carousel-nav prev" type="button" aria-label="Previous">&lsaquo;</button>
+        <button class="carousel-nav next" type="button" aria-label="Next">&rsaquo;</button>
+    </div>`;
 }}
+
+function setupCarousels(root) {{
+    const scope = root || document;
+    scope.querySelectorAll('.tweet-carousel').forEach(car => {{
+        if (car.dataset.init === '1') return;
+        car.dataset.init = '1';
+        const track = car.querySelector('.carousel-track');
+        const dots = car.querySelectorAll('.carousel-dots span');
+        const count = car.querySelector('.carousel-count');
+        const prev = car.querySelector('.carousel-nav.prev');
+        const next = car.querySelector('.carousel-nav.next');
+        if (!track) return;
+        const total = dots.length;
+        const update = () => {{
+            const idx = Math.round(track.scrollLeft / track.clientWidth);
+            dots.forEach((d, i) => d.classList.toggle('active', i === idx));
+            if (count) count.textContent = `${{idx + 1}} / ${{total}}`;
+        }};
+        track.addEventListener('scroll', update, {{ passive: true }});
+        if (prev) prev.addEventListener('click', () => track.scrollBy({{ left: -track.clientWidth, behavior: 'smooth' }}));
+        if (next) next.addEventListener('click', () => track.scrollBy({{ left: track.clientWidth, behavior: 'smooth' }}));
+    }});
+}}
+
+function setupTruncation(root) {{
+    const scope = root || document;
+    const MAX_HEIGHT = 13 * 16; /* 13em at 16px base */
+    scope.querySelectorAll('.tweet-text').forEach(el => {{
+        if (el.classList.contains('tweet-text-full')) return;
+        if (el.dataset.truncInit === '1') return;
+        el.dataset.truncInit = '1';
+        if (el.scrollHeight > MAX_HEIGHT + 16) {{
+            el.classList.add('truncated');
+            const btn = document.createElement('button');
+            btn.className = 'show-more-btn';
+            btn.type = 'button';
+            btn.textContent = 'Show more';
+            btn.addEventListener('click', () => {{
+                const isCollapsed = el.classList.toggle('truncated');
+                btn.textContent = isCollapsed ? 'Show more' : 'Show less';
+            }});
+            el.insertAdjacentElement('afterend', btn);
+        }}
+    }});
+}}
+
+document.addEventListener('DOMContentLoaded', () => {{
+    setupCarousels(document);
+    setupTruncation(document);
+}});
 
 function loadVideo(wrapper, src, poster) {{
     const video = document.createElement('video');
@@ -5780,6 +6522,190 @@ def extract_tweet_id_from_url(url: str) -> Optional[str]:
     import re
     match = re.search(r"/status/(\d+)", url)
     return match.group(1) if match else None
+
+
+def _syndication_token(tweet_id: str) -> str:
+    """Derive the token the syndication endpoint wants from a tweet id.
+
+    Mirrors the JS helper twitter's own embed pages use. Validation is lax —
+    any plausible short numeric string is accepted — but we match the real
+    algorithm so we'd survive if X tightened it.
+    """
+    import math
+    n = (int(tweet_id) / 1e15) * math.pi
+    return str(n).replace(".", "").replace("-", "0")[:12]
+
+
+def fetch_x_article(tweet_id: str, cookies: Optional[dict] = None) -> Optional[dict]:
+    """Fetch X article card metadata via the public syndication endpoint.
+
+    We look up by **tweet id** (the tweet that contains the article card),
+    not by article id — that's what the endpoint keys by, and it's what we
+    already have for every bookmark.
+
+    Endpoint: https://cdn.syndication.twimg.com/tweet-result?id=<tid>&token=<tok>
+    Response includes `article.{title, preview_text, cover_media.media_info.original_img_url}`
+    for tweets whose text references an X article. No auth needed — this is the
+    same endpoint used by publish.twitter.com and every tweet-embed integration.
+
+    The `cookies` arg is kept for signature compatibility with the old OG-scrape
+    implementation but is ignored; the endpoint is public.
+    """
+    import requests
+
+    token = _syndication_token(tweet_id)
+    url = f"https://cdn.syndication.twimg.com/tweet-result?id={tweet_id}&token={token}"
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/121.0 Safari/537.36",
+        "Accept": "application/json",
+    }
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=20)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+    except Exception:
+        return None
+
+    article = data.get("article") if isinstance(data, dict) else None
+    if not article:
+        return None
+
+    cover = (article.get("cover_media") or {}).get("media_info") or {}
+    image = (cover.get("original_img_url") or "").strip()
+    title = (article.get("title") or "").strip()
+    excerpt = (article.get("preview_text") or "").strip()
+
+    if not (title or excerpt or image):
+        return None
+
+    article_rest_id = article.get("rest_id") or ""
+    source_tweet_url = ""
+    user = (data.get("user") or {}) if isinstance(data, dict) else {}
+    screen_name = (user.get("screen_name") or "").strip()
+    if screen_name:
+        source_tweet_url = f"https://x.com/{screen_name}/status/{tweet_id}"
+
+    return {
+        "tweet_id": tweet_id,
+        "article_rest_id": article_rest_id,
+        "source_tweet_url": source_tweet_url,
+        "title": title,
+        "excerpt": excerpt,
+        "image": image,
+        "fetched_at": datetime.now().isoformat(),
+    }
+
+
+def _load_twitter_cookies_from_db() -> Optional[dict]:
+    """Load auth_token + ct0 from the Django TwitterProfile store. Returns None outside Django env."""
+    try:
+        import django
+        if not django.apps.apps.ready:
+            os.environ.setdefault("DJANGO_SETTINGS_MODULE", "web.settings")
+            django.setup()
+        from twitter.models import TwitterProfile
+        profile = TwitterProfile.objects.first()
+        if not profile:
+            return None
+        creds = profile.get_credentials() or {}
+        cookies = creds.get("cookies")
+        if isinstance(cookies, list):
+            return {c["name"]: c["value"] for c in cookies if "name" in c and "value" in c}
+        return cookies or None
+    except Exception:
+        return None
+
+
+def cmd_fetch_articles(args: argparse.Namespace) -> None:
+    """Fetch X article metadata (title, excerpt, image) for bookmarks whose text is an article URL.
+
+    Uses the public syndication endpoint keyed by tweet id (no auth required).
+    Cached to master/articles.json keyed by article_id (the id in /i/article/<id>)
+    for O(1) lookup during render. Safe to re-run; only missing articles are fetched.
+
+    The --retry-failed flag re-attempts previously failed fetches (useful after
+    switching to a new fetcher implementation).
+    """
+    import time
+
+    print("=== Fetching X articles ===")
+
+    if not MASTER_JSON.exists():
+        print("Error: No bookmarks found. Run 'merge' first.")
+        return
+
+    with open(MASTER_JSON, "r", encoding="utf-8") as f:
+        bookmarks = json.load(f)
+
+    cache = {"fetched": {}, "failed": {}}
+    if MASTER_ARTICLES.exists():
+        with open(MASTER_ARTICLES, "r", encoding="utf-8") as f:
+            cache = json.load(f)
+    cache.setdefault("fetched", {})
+    cache.setdefault("failed", {})
+
+    retry_failed = bool(getattr(args, "retry_failed", False))
+    if retry_failed and cache["failed"]:
+        print(f"--retry-failed: clearing {len(cache['failed'])} failed entries to retry")
+        cache["failed"] = {}
+
+    # Build (article_id, tweet_id) pairs — pick any one bookmark per article
+    pairs: list[tuple[str, str]] = []
+    seen_aids: set[str] = set()
+    for b in bookmarks:
+        m = ARTICLE_URL_PATTERN.search(b.get("Full Text", "") or "")
+        if not m:
+            continue
+        aid = m.group(1)
+        if aid in cache["fetched"] or aid in cache["failed"]:
+            continue
+        if aid in seen_aids:
+            continue
+        tid = str(b.get("Tweet Id") or "").strip()
+        if not tid:
+            continue
+        seen_aids.add(aid)
+        pairs.append((aid, tid))
+
+    print(f"Cached: {len(cache['fetched'])} fetched, {len(cache['failed'])} failed")
+    print(f"To fetch: {len(pairs)}")
+    if getattr(args, "max", 0):
+        pairs = pairs[: args.max]
+        print(f"Limiting this run to {len(pairs)} articles (--max)")
+    if not pairs:
+        return
+
+    fetched = failed = 0
+    for i, (aid, tid) in enumerate(pairs):
+        print(f"  {i+1}/{len(pairs)}: article {aid} (tweet {tid})")
+        result = fetch_x_article(tid)
+        if result:
+            # Store the article_url the card links to, plus all fetched fields
+            result["article_url"] = f"https://x.com/i/article/{aid}"
+            cache["fetched"][aid] = result
+            fetched += 1
+            print(f"    ✓ {result['title'][:70]}")
+        else:
+            cache["failed"][aid] = {
+                "url": f"https://x.com/i/article/{aid}",
+                "tweet_id": tid,
+                "error": "fetch_failed",
+                "attempted_at": datetime.now().isoformat(),
+            }
+            failed += 1
+            print("    ✗ failed")
+
+        with open(MASTER_ARTICLES, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2, ensure_ascii=False)
+
+        if i < len(pairs) - 1:
+            time.sleep(1)
+
+    print(f"\nDone. Fetched: {fetched}, Failed: {failed}")
+    print(f"Cache saved to {MASTER_ARTICLES}")
 
 
 def cmd_fetch_quotes(args: argparse.Namespace) -> None:
@@ -6215,6 +7141,10 @@ def main():
     subparsers.add_parser("thumbnails", help="Generate video thumbnails (requires ffmpeg)")
     subparsers.add_parser("fetch-quotes", help="Fetch quoted tweets and cache for HTML display")
 
+    fetch_articles_parser = subparsers.add_parser("fetch-articles", help="Fetch X article metadata (title, image, excerpt) for article-URL bookmarks")
+    fetch_articles_parser.add_argument("--max", type=int, default=0, help="Limit number of articles fetched this run (0 = no limit)")
+    fetch_articles_parser.add_argument("--retry-failed", action="store_true", help="Clear and re-attempt previously failed entries")
+
     # Sync command - full workflow
     sync_parser = subparsers.add_parser("sync", help="Full sync: merge, categorize, generate, deploy to server")
     sync_parser.add_argument("--with-media", action="store_true", help="Also sync media files (slower)")
@@ -6254,6 +7184,7 @@ def main():
         "sync": cmd_sync,
         "fetch": cmd_fetch,
         "fetch-quotes": cmd_fetch_quotes,
+        "fetch-articles": cmd_fetch_articles,
         "fetch-status": cmd_fetch_status,
         "clean-cache": cmd_clean_cache,
     }
