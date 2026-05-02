@@ -6730,8 +6730,8 @@ def _extract_initial_state(html: str) -> Optional[dict]:
         return None
 
 
-_ARTICLE_PAGE_TIMEOUT_MS = 30000
-_ARTICLE_HYDRATION_TIMEOUT_MS = 25000
+_ARTICLE_PAGE_TIMEOUT_MS = 20000
+_ARTICLE_HYDRATION_TIMEOUT_MS = 12000
 
 
 def _twitter_auth_cookie_objs(cookies: dict) -> list:
@@ -7031,8 +7031,6 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
         return
 
     cookies = _load_twitter_cookies()
-    body_browser_ctx = None
-    body_browser_page = None
     body_browser_pw = None
     body_browser = None
     if cookies:
@@ -7040,25 +7038,20 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
             from playwright.sync_api import sync_playwright
             body_browser_pw = sync_playwright().start()
             body_browser = body_browser_pw.chromium.launch(headless=True)
-            body_browser_ctx = body_browser.new_context(
-                user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-                           "(KHTML, like Gecko) Chrome/121.0 Safari/537.36",
-                viewport={"width": 1280, "height": 1600},
-            )
-            body_browser_ctx.add_cookies(_twitter_auth_cookie_objs(cookies))
-            body_browser_page = body_browser_ctx.new_page()
-            print("Body capture: enabled (Playwright + auth cookies)")
+            print("Body capture: enabled (Playwright + auth cookies, fresh context per article)")
         except Exception as e:
             print(f"Body capture: disabled ({e})")
     else:
         print("Body capture: disabled (no Twitter cookies in env or DB)")
+
+    cookie_objs = _twitter_auth_cookie_objs(cookies) if cookies else []
 
     fetched = failed = bodies = 0
     try:
         for i, (aid, tid) in enumerate(pairs):
             existing = cache["fetched"].get(aid)
             mode = "body-only" if existing else "full"
-            print(f"  {i+1}/{len(pairs)} [{mode}]: article {aid} (tweet {tid})")
+            print(f"  {i+1}/{len(pairs)} [{mode}]: article {aid} (tweet {tid})", flush=True)
 
             if existing:
                 # Backfill: keep existing syndication metadata, only fetch body.
@@ -7073,7 +7066,7 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
                         "attempted_at": datetime.now().isoformat(),
                     }
                     failed += 1
-                    print("    ✗ syndication fetch failed")
+                    print("    ✗ syndication fetch failed", flush=True)
                     with open(MASTER_ARTICLES, "w", encoding="utf-8") as f:
                         json.dump(cache, f, indent=2, ensure_ascii=False)
                     if i < len(pairs) - 1:
@@ -7081,12 +7074,36 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
                     continue
                 result["article_url"] = f"https://x.com/i/article/{aid}"
 
-            if body_browser_page is not None:
+            if body_browser is not None:
+                # Fresh context+page per article — avoids state pollution that
+                # caused empty-body returns and eventual hangs in earlier
+                # shared-page batches.
+                ctx = None
+                page = None
                 try:
-                    body = fetch_x_article_body_via_browser(aid, cookies, page=body_browser_page)
+                    ctx = body_browser.new_context(
+                        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                                   "(KHTML, like Gecko) Chrome/121.0 Safari/537.36",
+                        viewport={"width": 1280, "height": 1600},
+                    )
+                    if cookie_objs:
+                        ctx.add_cookies(cookie_objs)
+                    page = ctx.new_page()
+                    body = fetch_x_article_body_via_browser(aid, cookies, page=page)
                 except Exception as e:
-                    print(f"    body fetch error: {e}")
+                    print(f"    body fetch error: {e}", flush=True)
                     body = None
+                finally:
+                    try:
+                        if page is not None:
+                            page.close()
+                    except Exception:
+                        pass
+                    try:
+                        if ctx is not None:
+                            ctx.close()
+                    except Exception:
+                        pass
                 if body and body.get("body_html"):
                     result["body_html"] = body["body_html"]
                     if body.get("title"):
@@ -7094,11 +7111,11 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
                     if body.get("cover_url") and not result.get("image"):
                         result["image"] = body["cover_url"]
                     bodies += 1
-                    print(f"    ✓ {result.get('title','')[:70]}  body={len(body['body_html'])}ch")
+                    print(f"    ✓ {result.get('title','')[:70]}  body={len(body['body_html'])}ch", flush=True)
                 else:
-                    print(f"    ✓ {result.get('title','')[:70]}  (no body)")
+                    print(f"    ✓ {result.get('title','')[:70]}  (no body)", flush=True)
             else:
-                print(f"    ✓ {result.get('title','')[:70]}")
+                print(f"    ✓ {result.get('title','')[:70]}", flush=True)
 
             cache["fetched"][aid] = result
             if not existing:
