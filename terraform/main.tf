@@ -70,6 +70,16 @@ resource "aws_security_group" "web_sg" {
     description = "SSH access"
   }
 
+  # WireGuard VPN (blades-capture) — added out-of-band for newblades packet
+  # capture; captured here so terraform stops trying to remove it.
+  ingress {
+    from_port   = 51820
+    to_port     = 51820
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "WireGuard VPN (blades-capture)"
+  }
+
   # Allow all outbound traffic
   egress {
     from_port   = 0
@@ -160,6 +170,15 @@ resource "aws_instance" "web" {
     Name        = "${var.project_name}-web"
     Project     = var.project_name
     Environment = var.environment
+  }
+
+  # Keep the running AMI pinned. The data source above tracks the *latest*
+  # AL2023 image, which drifts over time and would force a destroy/recreate
+  # (and EBS root-volume data loss) on every apply. Fresh builds still pick the
+  # latest AMI; an already-running instance is left in place so resizes and
+  # other changes apply in-place. Remove this to intentionally rebuild on a new AMI.
+  lifecycle {
+    ignore_changes = [ami]
   }
 }
 

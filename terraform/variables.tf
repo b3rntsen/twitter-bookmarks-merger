@@ -17,9 +17,9 @@ variable "environment" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type (t3.small recommended for Docker builds, t3.micro or t4g.micro for free-tier)"
+  description = "EC2 instance type (t3.medium = 2 vCPU/4GB, current; t3.small = 2GB; t3.micro/t4g.micro = free-tier)"
   type        = string
-  default     = "t3.small"
+  default     = "t3.medium"
 }
 
 variable "key_pair_name" {

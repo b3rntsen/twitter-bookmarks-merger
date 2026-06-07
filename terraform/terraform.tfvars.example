@@ -5,7 +5,7 @@
 aws_region     = "us-east-1"
 project_name   = "twitter-bookmarks"
 environment    = "dev"
-instance_type  = "t3.small"  # Recommended: t3.small (2GB RAM). Free-tier: t3.micro (eu-north-1), t2.micro (us-east-1)
+instance_type  = "t3.medium"  # Current: t3.medium (2 vCPU/4GB). Smaller: t3.small (2GB). Free-tier: t3.micro (eu-north-1), t2.micro (us-east-1)
 
 # SSH Key Pair (optional - leave empty if not using SSH)
 # Create with: aws ec2 create-key-pair --key-name twitter-bookmarks-key
