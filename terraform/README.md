@@ -2,6 +2,21 @@
 
 This directory contains Terraform configuration to deploy the Twitter Bookmarks application to AWS EC2 (free-tier eligible).
 
+## AWS Account / Ownership
+
+The Twitter server (EC2 `13.49.172.180`, instance `i-0759ffea3fd2fffba`, region `eu-north-1`) is owned by:
+
+| | |
+|---|---|
+| **Account ID** | `209556414107` |
+| **Account name** | `wemobilize.dk` |
+| **Root login email** | `nikolaj@wemobilize.dk` |
+| **Console sign-in** | https://209556414107.signin.aws.amazon.com/console (no alias set) |
+| **Organization** | `o-xapmfalhg9` (joined by invitation 2020-11-22) |
+
+> Sign in to the AWS console as the **root user** with `nikolaj@wemobilize.dk`.
+> The local `[default]` AWS CLI profile on the deploy machine uses this account's **root** access keys — AWS recommends replacing these with an IAM user/role.
+
 ## DNS Setup
 
 This Terraform configuration creates a Route 53 hosted zone for `vibe.dethele.com` and sets up `twitter.vibe.dethele.com` to point to the EC2 instance.
