@@ -4050,13 +4050,27 @@ function setupSearch() {{
     }});
 }}
 
-function filterTweets(query) {{
+async function filterTweets(query) {{
     query = (query || '').trim();
     const resultsDiv = document.getElementById('search-results');
 
     if (!query) {{
         filteredTweets = allTweets;
     }} else {{
+        // Search must cover ALL bookmarks, not just the chunks lazily loaded so far.
+        // Pull in any remaining chunks before filtering (one-time; later searches are instant).
+        if (tweetsMeta && loadedChunks < tweetsMeta.chunks) {{
+            resultsDiv.textContent = 'Searching all bookmarks…';
+            resultsDiv.classList.remove('hidden');
+            let guard = (tweetsMeta.chunks || 0) + 50;
+            while (loadedChunks < tweetsMeta.chunks && guard-- > 0) {{
+                if (isLoadingChunk) {{
+                    await new Promise(r => setTimeout(r, 30));
+                }} else {{
+                    await loadNextChunk();
+                }}
+            }}
+        }}
         const isProfile = query.startsWith('@');
         if (isProfile) {{
             // Profile search - use includes for @ searches
@@ -6013,13 +6027,27 @@ function setupSearch() {{
     }});
 }}
 
-function filterTweets(query) {{
+async function filterTweets(query) {{
     query = (query || '').trim();
     const resultsDiv = document.getElementById('search-results');
 
     if (!query) {{
         filteredTweets = allTweets;
     }} else {{
+        // Search must cover ALL bookmarks, not just the chunks lazily loaded so far.
+        // Pull in any remaining chunks before filtering (one-time; later searches are instant).
+        if (tweetsMeta && loadedChunks < tweetsMeta.chunks) {{
+            resultsDiv.textContent = 'Searching all bookmarks…';
+            resultsDiv.classList.remove('hidden');
+            let guard = (tweetsMeta.chunks || 0) + 50;
+            while (loadedChunks < tweetsMeta.chunks && guard-- > 0) {{
+                if (isLoadingChunk) {{
+                    await new Promise(r => setTimeout(r, 30));
+                }} else {{
+                    await loadNextChunk();
+                }}
+            }}
+        }}
         const isProfile = query.startsWith('@');
         if (isProfile) {{
             // Profile search - use includes for @ searches
