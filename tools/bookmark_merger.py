@@ -7276,6 +7276,35 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
 
     cookie_objs = _twitter_auth_cookie_objs(cookies) if cookies else []
 
+    # Install signal handlers so a SIGTERM/SIGINT (e.g. from a parent that
+    # killpg's the whole process group on its own timeout) closes Playwright
+    # before exit. Without this, chromium grandchildren get orphaned and
+    # accumulate as zombies under PID 1 in containers where PID 1 is python.
+    import signal as _signal
+    import threading as _threading
+
+    def _close_with_deadline(fn, timeout=10):
+        # Wedged chromium can hang browser.close()/pw.stop() forever. Run in a
+        # daemon thread so we move on after `timeout`; the parent's killpg
+        # sweep finishes anything still alive.
+        def _runner():
+            try:
+                fn()
+            except Exception:
+                pass
+        t = _threading.Thread(target=_runner, daemon=True)
+        t.start()
+        t.join(timeout)
+
+    def _cleanup_playwright_and_exit(signum, _frame):
+        if body_browser is not None:
+            _close_with_deadline(body_browser.close)
+        if body_browser_pw is not None:
+            _close_with_deadline(body_browser_pw.stop)
+        sys.exit(143 if signum == _signal.SIGTERM else 130)
+    _prev_term = _signal.signal(_signal.SIGTERM, _cleanup_playwright_and_exit)
+    _prev_int = _signal.signal(_signal.SIGINT, _cleanup_playwright_and_exit)
+
     fetched = failed = bodies = 0
     try:
         for i, (aid, tid) in enumerate(pairs):
@@ -7366,11 +7395,13 @@ def cmd_fetch_articles(args: argparse.Namespace) -> None:
             if i < len(pairs) - 1:
                 time.sleep(1)
     finally:
+        if body_browser is not None:
+            _close_with_deadline(body_browser.close)
+        if body_browser_pw is not None:
+            _close_with_deadline(body_browser_pw.stop)
         try:
-            if body_browser is not None:
-                body_browser.close()
-            if body_browser_pw is not None:
-                body_browser_pw.stop()
+            _signal.signal(_signal.SIGTERM, _prev_term)
+            _signal.signal(_signal.SIGINT, _prev_int)
         except Exception:
             pass
 

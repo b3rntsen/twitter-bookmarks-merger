@@ -1,8 +1,36 @@
 from datetime import timedelta
 from django.core.management.base import BaseCommand
 from django.utils import timezone
+from django_q.models import Schedule as DjangoQSchedule
 from twitter.models import TwitterProfile, BookmarkSyncSchedule, BookmarkSyncJob
 from twitter.tasks import schedule_next_bookmark_sync
+
+
+WATCHDOG_NAME = 'bookmark_sync_watchdog'
+WATCHDOG_FUNC = 'twitter.tasks.recover_stuck_bookmark_syncs'
+WATCHDOG_INTERVAL_MINUTES = 30
+
+
+def ensure_recovery_watchdog():
+    desired = {
+        'func': WATCHDOG_FUNC,
+        'schedule_type': DjangoQSchedule.MINUTES,
+        'minutes': WATCHDOG_INTERVAL_MINUTES,
+        'repeats': -1,
+    }
+    sched, created = DjangoQSchedule.objects.get_or_create(
+        name=WATCHDOG_NAME,
+        defaults={**desired, 'next_run': timezone.now() + timedelta(minutes=1)},
+    )
+    if not created:
+        changed = False
+        for field, value in desired.items():
+            if getattr(sched, field) != value:
+                setattr(sched, field, value)
+                changed = True
+        if changed:
+            sched.save()
+    return sched, created
 
 
 class Command(BaseCommand):
@@ -32,6 +60,17 @@ class Command(BaseCommand):
                 )
             )
             return
+
+        # Ensure the periodic recovery watchdog is registered. Independent of
+        # any sync run, so a crashed sync can't strand the scheduler.
+        try:
+            _, created = ensure_recovery_watchdog()
+            self.stdout.write(self.style.SUCCESS(
+                f"{'Created' if created else 'Verified'} recovery watchdog "
+                f"(runs every {WATCHDOG_INTERVAL_MINUTES} min)"
+            ))
+        except Exception as e:
+            self.stdout.write(self.style.ERROR(f'Failed to register recovery watchdog: {e}'))
 
         # Recover any jobs stuck in 'running' state (likely from worker crash/restart)
         stale_cutoff = timezone.now() - timedelta(minutes=30)

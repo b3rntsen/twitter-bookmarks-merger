@@ -4,6 +4,8 @@ import sys
 import re
 import json
 import os
+import signal
+import time
 import logging
 from pathlib import Path
 from datetime import timedelta, datetime, timezone as dt_timezone
@@ -26,6 +28,66 @@ BOOKMARKS_HTML_DIR = Path(__file__).parent.parent.parent / 'bookmarks-html'
 BIRDMARKS_CACHE = Path(__file__).parent.parent.parent / 'birdmarks_cache'
 BOOKMARKS_MEDIA_DIR = Path(os.environ.get('BOOKMARKS_MEDIA_DIR',
                                            str(MASTER_DIR / 'media')))
+
+
+def _sweep_kill_pgroup(pgid: int) -> None:
+    # SIGTERM the whole process group, poll up to ~500ms for it to drain,
+    # then SIGKILL anything that's left. Used to clean up Playwright/chromium
+    # helpers that escaped browser.close() and would otherwise be reparented
+    # to PID 1 (qcluster main) where they leak RAM until they exit.
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        return
+    for _ in range(10):
+        time.sleep(0.05)
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return
+        except PermissionError:
+            return
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _run_with_pgroup_timeout(cmd, timeout, **popen_kwargs):
+    """Run a subprocess and kill the entire process group on timeout.
+
+    subprocess.run(timeout=...) only sends SIGKILL to the immediate child,
+    leaving grandchildren (e.g. chromium spawned by Playwright) orphaned.
+    Inside a Docker container whose PID 1 is python (runserver/qcluster),
+    those orphans are never reaped and pile up as zombies. Putting the
+    child in its own process group (start_new_session=True) lets us
+    killpg() the whole tree.
+
+    Also sweeps the process group on clean exit — Playwright's browser.close()
+    is not always sufficient to terminate chromium helpers, and a sweep here
+    catches the stragglers while they're still alive.
+    """
+    proc = subprocess.Popen(cmd, start_new_session=True, **popen_kwargs)
+    pgid = os.getpgid(proc.pid)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+        _sweep_kill_pgroup(pgid)
+        return subprocess.CompletedProcess(cmd, proc.returncode, stdout, stderr)
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(pgid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            stdout, stderr = proc.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+            stdout, stderr = proc.communicate()
+        _sweep_kill_pgroup(pgid)
+        raise subprocess.TimeoutExpired(cmd, timeout, output=stdout, stderr=stderr)
 
 
 def sync_all_media(cache_dir: Path) -> int:
@@ -429,12 +491,17 @@ def enrich_new_articles(max_articles: int = 40) -> int:
         retry_marker = MASTER_DIR / '.article_retry_done'
         retry_flag = [] if retry_marker.exists() else ['--retry-failed']
 
-        result = subprocess.run(
-            [sys.executable, str(merger_script), 'fetch-articles',
-             '--max', str(max_articles), *retry_flag],
-            capture_output=True, text=True, timeout=600,
-            cwd=str(TOOLS_DIR.parent)
-        )
+        try:
+            result = _run_with_pgroup_timeout(
+                [sys.executable, str(merger_script), 'fetch-articles',
+                 '--max', str(max_articles), *retry_flag],
+                timeout=600,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                cwd=str(TOOLS_DIR.parent),
+            )
+        except subprocess.TimeoutExpired as te:
+            logger.warning(f"fetch-articles timed out after 600s; process group killed. stderr tail: {(te.stderr or '')[-300:]}")
+            return 0
         if result.returncode != 0:
             logger.warning(f"fetch-articles exited non-zero: {result.stderr[:300]}")
             return 0
@@ -881,3 +948,65 @@ def schedule_next_bookmark_sync(twitter_profile_id: int):
     except Exception as e:
         # Log error but don't raise
         logger.exception(f"Error scheduling next sync for profile {twitter_profile_id}: {e}")
+
+
+def recover_stuck_bookmark_syncs():
+    # Independent watchdog. Schedule_next_bookmark_sync only runs at the end of
+    # a sync, so a crash mid-run leaves the schedule frozen with no path to
+    # recovery. This task runs on its own Django-Q periodic schedule.
+    now = timezone.now()
+    recovered_stuck = 0
+    cancelled_pending = 0
+    rescheduled = 0
+
+    stuck_running = BookmarkSyncJob.objects.filter(
+        status='running',
+        started_at__lt=now - timedelta(minutes=30),
+    )
+    stuck_count = stuck_running.count()
+    if stuck_count:
+        stuck_running.update(
+            status='failed',
+            error_type='stale_job',
+            error_message='Watchdog: stuck in running >30 min (likely worker crash)',
+            completed_at=now,
+        )
+        recovered_stuck = stuck_count
+        logger.warning(f"Watchdog recovered {stuck_count} stuck running job(s)")
+
+    stale_pending = BookmarkSyncJob.objects.filter(
+        status='pending',
+        scheduled_at__lt=now - timedelta(days=1),
+    )
+    cancelled_pending = stale_pending.count()
+    if cancelled_pending:
+        stale_pending.update(
+            status='failed',
+            error_type='stale_job',
+            error_message='Watchdog: pending >1 day, cancelled',
+            completed_at=now,
+        )
+        logger.warning(f"Watchdog cancelled {cancelled_pending} stale pending job(s)")
+
+    overdue = BookmarkSyncSchedule.objects.filter(
+        enabled=True,
+        next_sync_at__lt=now,
+    ).select_related('twitter_profile')
+    for sched in overdue:
+        try:
+            schedule_next_bookmark_sync(sched.twitter_profile_id)
+            rescheduled += 1
+        except Exception as e:
+            logger.exception(
+                f"Watchdog: error rescheduling profile {sched.twitter_profile_id}: {e}"
+            )
+
+    if recovered_stuck or cancelled_pending or rescheduled:
+        logger.info(
+            f"Watchdog: recovered={recovered_stuck} cancelled_pending={cancelled_pending} rescheduled={rescheduled}"
+        )
+    return {
+        'recovered_stuck': recovered_stuck,
+        'cancelled_pending': cancelled_pending,
+        'rescheduled': rescheduled,
+    }
