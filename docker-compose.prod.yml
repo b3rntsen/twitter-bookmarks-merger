@@ -25,6 +25,7 @@ services:
   web:
     image: twitter-bookmarks-web
     build: .  # Fallback if image doesn't exist
+    init: true
     command: python manage.py runserver 0.0.0.0:8000
     # Production: no volume mounts for code (baked into image)
     # But mount staticfiles and media for nginx to serve
@@ -67,6 +68,7 @@ services:
   qcluster:
     image: twitter-bookmarks-web
     build: .  # Fallback if image doesn't exist
+    init: true
     command: python manage.py qcluster
     volumes:
       - media:/app/media
@@ -97,7 +99,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: 800M  # Allow more for Playwright browsers, but still limit
+          memory: 1.5G  # Playwright/Chromium headroom; raised from 800M after the t3.medium (4GB) upgrade
         reservations:
           memory: 500M
     networks:

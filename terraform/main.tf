@@ -133,6 +133,106 @@ resource "aws_iam_role" "ec2_role" {
   }
 }
 
+# SSM Session Manager: out-of-band shell that works over outbound 443 even when
+# inbound is firewalled/blackholed (see docs/safe-reboot.md). The SSM agent ships
+# with AL2023; this attachment grants it permission to register with Systems Manager.
+resource "aws_iam_role_policy_attachment" "ssm_core" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
+}
+
+# --- Session Manager logging: record every SSM session to CloudWatch Logs ---
+# Makes the recovery shell auditable (keystrokes + output), not a silent channel.
+resource "aws_cloudwatch_log_group" "ssm_sessions" {
+  name              = "/ssm/${var.project_name}/session-logs"
+  retention_in_days = 90
+}
+
+# Allow the instance to write its session logs to the group above.
+resource "aws_iam_role_policy" "ssm_session_logs" {
+  name = "${var.project_name}-ssm-session-logs"
+  role = aws_iam_role.ec2_role.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams",
+        "logs:DescribeLogGroups",
+      ]
+      Resource = [
+        aws_cloudwatch_log_group.ssm_sessions.arn,
+        "${aws_cloudwatch_log_group.ssm_sessions.arn}:*",
+      ]
+    }]
+  })
+}
+
+# Account/region Session Manager preferences: stream every session to the log group.
+resource "aws_ssm_document" "session_prefs" {
+  name            = "SSM-SessionManagerRunShell"
+  document_type   = "Session"
+  document_format = "JSON"
+  content = jsonencode({
+    schemaVersion = "1.0"
+    description   = "Session Manager preferences (log sessions to CloudWatch)"
+    sessionType   = "Standard_Stream"
+    inputs = {
+      cloudWatchLogGroupName      = aws_cloudwatch_log_group.ssm_sessions.name
+      cloudWatchEncryptionEnabled = false
+      cloudWatchStreamingEnabled  = true
+      s3BucketName                = ""
+      s3KeyPrefix                 = ""
+      s3EncryptionEnabled         = false
+      idleSessionTimeout          = "20"
+      runAsEnabled                = false
+      shellProfile                = { linux = "", windows = "" }
+    }
+  })
+}
+
+# --- Dedicated, MFA-required SSM session operator (least privilege, non-root) ---
+# Can ONLY start an SSM session on THIS instance, and only with MFA present.
+# Enroll its MFA device + create access keys in the console (kept out of
+# terraform state on purpose); see docs/safe-reboot.md for the setup steps.
+resource "aws_iam_user" "ssm_operator" {
+  name = "${var.project_name}-ssm-operator"
+  tags = { Project = var.project_name }
+}
+
+resource "aws_iam_user_policy" "ssm_operator" {
+  name = "${var.project_name}-ssm-session-mfa"
+  user = aws_iam_user.ssm_operator.name
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid      = "StartSessionOnThisInstanceWithMFA"
+        Effect   = "Allow"
+        Action   = "ssm:StartSession"
+        Resource = aws_instance.web.arn
+        Condition = {
+          Bool = { "aws:MultiFactorAuthPresent" = "true" }
+        }
+      },
+      {
+        Sid      = "ManageOwnSessions"
+        Effect   = "Allow"
+        Action   = ["ssm:TerminateSession", "ssm:ResumeSession"]
+        Resource = "arn:aws:ssm:*:*:session/$${aws:username}-*"
+      },
+      {
+        Sid      = "ReadForUsability"
+        Effect   = "Allow"
+        Action   = ["ssm:DescribeInstanceInformation", "ssm:DescribeSessions", "ssm:GetConnectionStatus"]
+        Resource = "*"
+      },
+    ]
+  })
+}
+
 # IAM Instance Profile
 resource "aws_iam_instance_profile" "ec2_profile" {
   name = "${var.project_name}-ec2-profile"
