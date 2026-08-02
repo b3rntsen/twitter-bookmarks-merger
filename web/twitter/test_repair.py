@@ -92,19 +92,17 @@ class RepairUnimportedContentTest(TestCase):
         tweet.refresh_from_db()
         self.assertEqual(tweet.text_content, '')
 
-    def test_media_only_tweet_is_not_counted_as_repaired(self):
-        # Legitimately textless: markdown holds only an image reference.
+    def test_media_only_tweet_is_left_blank(self):
+        # Legitimately textless: the markdown holds only an image reference, so
+        # extract_tweet_text returns ''. Every blank row in the production archive
+        # turned out to be this case, not a dropped import — the repair must leave
+        # them alone rather than write junk (e.g. the image markup) into the text.
         self.make_tweet('123')
         self.write_md('2026-01-01-alice-123.md', '123', '![](assets/pic.jpg)')
 
-        # Either the extractor yields nothing (no repair) or it yields the image
-        # markup; what must not happen is a silent claim of success on empty text.
-        repaired = repair_unimported_content(self.cache)
-        tweet = Tweet.objects.get(tweet_id='123')
-        if repaired == 0:
-            self.assertEqual(tweet.text_content, '')
-        else:
-            self.assertTrue(tweet.text_content.strip())
+        self.assertEqual(repair_unimported_content(self.cache), 0)
+
+        self.assertEqual(Tweet.objects.get(tweet_id='123').text_content, '')
 
     def test_limit_caps_work_per_cycle(self):
         for i in range(5):

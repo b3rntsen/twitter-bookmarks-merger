@@ -166,6 +166,19 @@ class WatermarkTestCase(TestCase):
         self.assertEqual(len(report.fetch_gaps), 1)
         self.assertIn('empty_content', report.fetch_gaps[0]['reasons'])
 
+    def test_media_only_tweet_with_blank_text_is_not_a_gap(self):
+        # A tweet that is just an image has no text by nature. Every blank row in
+        # the production archive was this, so treating blankness alone as a defect
+        # would have pinned the watermark on perfectly healthy bookmarks.
+        self.add_tweet('1', 0, text='', media=['pic.jpg'])
+        newest = self.add_tweet('2', 10)
+
+        report = self.verify()
+
+        self.assertEqual(report.watermark, newest)
+        self.assertEqual(report.fetch_gaps, [])
+        self.assertNotIn('content_not_imported', report.local_gaps)
+
     def test_cached_but_unimported_content_is_a_local_gap(self):
         # Markdown is cached, so the text is recoverable by re-importing; that is
         # local repair, not a re-fetch, and must not block.
