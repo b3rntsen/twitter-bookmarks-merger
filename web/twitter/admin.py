@@ -20,11 +20,12 @@ class BookmarkSyncScheduleAdmin(admin.ModelAdmin):
         'interval_display',
         'active_hours_display',
         'next_sync_display',
-        'failure_status'
+        'failure_status',
+        'watermark_display',
     ]
     list_filter = ['enabled', 'consecutive_failures']
     search_fields = ['twitter_profile__twitter_username']
-    actions = ['reset_failures', 'reschedule_now', 'disable_schedules']
+    actions = ['reset_failures', 'reschedule_now', 'disable_schedules', 'verify_now']
 
     fieldsets = (
         ('Profile', {
@@ -39,11 +40,50 @@ class BookmarkSyncScheduleAdmin(admin.ModelAdmin):
         ('Fetch Settings', {
             'fields': ('max_pages', 'use_until_synced')
         }),
+        ('Verified Completeness', {
+            'fields': ('verified_ok_before', 'verified_at', 'verified_count',
+                       'fetch_margin_pages', 'full_rebuild_interval_days',
+                       'last_full_rebuild_at', 'next_fetch_display',
+                       'verification_report'),
+            'description': (
+                'Bookmarks ingested at or before the watermark are verified complete, '
+                'so the fetcher stops there instead of re-walking the whole archive.'
+            ),
+        }),
         ('Status', {
             'fields': ('last_scheduled_at', 'next_sync_at', 'consecutive_failures'),
             'classes': ('collapse',)
         }),
     )
+    readonly_fields = ['verified_at', 'verified_count', 'verification_report',
+                       'last_full_rebuild_at', 'next_fetch_display']
+
+    def watermark_display(self, obj):
+        if not obj.verified_ok_before:
+            return "not established"
+        gaps = (obj.verification_report or {}).get('fetch_gap_count', 0)
+        suffix = f" ({gaps} gaps)" if gaps else ""
+        return f"{obj.verified_ok_before:%Y-%m-%d %H:%M} · {obj.verified_count} verified{suffix}"
+    watermark_display.short_description = "Verified through"
+
+    def next_fetch_display(self, obj):
+        from .verification import plan_fetch
+        if obj.pk is None:
+            return "—"
+        plan = plan_fetch(obj)
+        return f"birdmarks {' '.join(plan['args'])} — {plan['reason']}"
+    next_fetch_display.short_description = "Next fetch will run"
+
+    @admin.action(description="Verify completeness and update watermark")
+    def verify_now(self, request, queryset):
+        # Verify per schedule, not once for all: each carries its own quarantine
+        # list, and ignoring it would hold the watermark back at a record that
+        # was deliberately excluded.
+        from .verification import advance_watermark, verify_for
+        for schedule in queryset:
+            report = verify_for(schedule)
+            advance_watermark(schedule, report)
+            self.message_user(request, f"{schedule.twitter_profile}: {report.summary()}")
 
     def interval_display(self, obj):
         return f"{obj.interval_minutes} ± {obj.randomize_minutes} min"

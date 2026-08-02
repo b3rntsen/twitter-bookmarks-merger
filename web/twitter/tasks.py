@@ -13,6 +13,9 @@ from django.utils import timezone
 from django_q.tasks import schedule as q_schedule
 from django_q.models import Schedule as DjangoQSchedule
 from .models import TwitterProfile, BookmarkSyncJob, BookmarkSyncSchedule, Tweet, TweetMedia
+from .verification import (
+    advance_watermark, bounded_fetch_may_have_truncated, plan_fetch, verify_for,
+)
 
 # Shared markdown parsing (from tools/)
 sys.path.insert(0, str(Path(__file__).parent.parent.parent / 'tools'))
@@ -128,6 +131,54 @@ def sync_all_media(cache_dir: Path) -> int:
     if copied:
         logger.info(f"sync_all_media: copied {copied} media files to {BOOKMARKS_MEDIA_DIR}")
     return copied
+
+
+def repair_unimported_content(cache_dir: Path, limit: int = 200) -> int:
+    """Refill bookmarks whose DB row is blank but whose markdown is cached.
+
+    import_markdown_bookmarks skips any tweet_id already in the database, so a row
+    that was created empty (an early import that dropped the text) stays empty
+    forever even though the text is sitting in the cache. Verification reports
+    these as the local gap 'content_not_imported'; this is what repairs them.
+
+    Only ever fills blanks — never overwrites text we already hold.
+    """
+    blank = Tweet.objects.filter(text_content__regex=r'^\s*$')[:limit]
+    repaired = 0
+    for tweet in blank:
+        md_file = cache_dir / f"{tweet.tweet_id}.md"
+        if not md_file.exists():
+            # Match birdmarks' own naming, which prefixes date and author.
+            matches = list(cache_dir.glob(f"*-{tweet.tweet_id}.md"))
+            if not matches:
+                continue
+            md_file = matches[0]
+
+        try:
+            frontmatter, body = parse_frontmatter(md_file.read_text(encoding='utf-8'))
+        except Exception as e:
+            logger.warning(f"repair_unimported_content: unreadable {md_file.name}: {e}")
+            continue
+
+        text = extract_tweet_text(body)
+        if not (text or '').strip():
+            continue  # genuinely textless (media-only) — nothing to repair
+
+        fields = ['text_content', 'updated_at']
+        tweet.text_content = text
+        if not tweet.author_username:
+            tweet.author_username = frontmatter.get('author', '')
+            fields.append('author_username')
+        if not tweet.author_display_name:
+            tweet.author_display_name = frontmatter.get('author_name', '')
+            fields.append('author_display_name')
+        tweet.save(update_fields=fields)
+        repaired += 1
+        logger.info(f"repair_unimported_content: refilled text for {tweet.tweet_id}")
+
+    if repaired:
+        logger.info(f"repair_unimported_content: repaired {repaired} blank bookmark(s)")
+    return repaired
 
 
 def categorize_uncategorized_tweets(max_per_cycle: int = 100) -> int:
@@ -621,18 +672,23 @@ def execute_bookmark_sync(sync_job_id: int):
         if 'auth_token' not in cookie_dict or 'ct0' not in cookie_dict:
             raise Exception("Missing auth_token or ct0 in cookies")
 
-        # Build command WITHOUT credentials in args
+        # Build command WITHOUT credentials in args.
+        # The fetch window comes from the verified-completeness watermark: bookmarks
+        # ingested at or before schedule.verified_ok_before are known complete, so the
+        # walk stops once it has covered the region above it (plus a margin). birdmarks
+        # takes no timestamp, so the watermark is expressed as a --max-pages bound.
         cmd = [str(birdmarks_bin), str(output_dir)]
 
-        if schedule.use_until_synced:
-            cmd.append("--rebuild")
-            # Clear stale cursor so rebuild always starts from page 1 (newest)
+        plan = plan_fetch(schedule)
+        cmd.extend(plan['args'])
+        logger.info(f"Fetch plan: {plan['reason']}")
+
+        if plan['clear_state']:
+            # Clear stale cursor so the run always starts from page 1 (newest)
             state_file = output_dir / "exporter-state.json"
             if state_file.exists():
                 state_file.unlink()
                 logger.info("Cleared birdmarks state file for fresh rebuild")
-        else:
-            cmd.extend(["--max-pages", str(schedule.max_pages)])
 
         # Pass cookies as environment variables (birdmarks reads AUTH_TOKEN and CT0 from env)
         env = os.environ.copy()
@@ -695,6 +751,16 @@ def execute_bookmark_sync(sync_job_id: int):
         except Exception as import_error:
             logger.error(f"Failed to import bookmarks: {import_error}")
 
+        # Step 1b: Refill rows that were imported blank. Must run before the export
+        # below, which copies text_content into bookmarks.json (and thence into
+        # categorisation), otherwise the blank propagates downstream.
+        try:
+            repaired = repair_unimported_content(output_dir)
+            if repaired:
+                logger.info(f"Repaired {repaired} blank bookmark(s) from cache")
+        except Exception as repair_error:
+            logger.error(f"Content repair failed: {repair_error}")
+
         # Step 2: Sync ALL media from cache to bookmarks-media/ (not just new tweets)
         media_copied = 0
         try:
@@ -728,6 +794,15 @@ def execute_bookmark_sync(sync_job_id: int):
         except Exception as regen_error:
             logger.error(f"Static site regeneration failed: {regen_error}")
 
+        # Step 7: Verify completeness and move the watermark. Runs after the repair
+        # steps above so local gaps they just fixed are not counted against it.
+        verification = None
+        try:
+            verification = verify_for(schedule)
+            logger.info(f"Verification: {verification.summary()}")
+        except Exception as verify_error:
+            logger.error(f"Verification failed: {verify_error}")
+
         # Stop capturing pipeline logs
         logger.removeHandler(log_handler)
         pipeline_logs = log_buffer.getvalue()
@@ -745,6 +820,21 @@ def execute_bookmark_sync(sync_job_id: int):
             schedule.backoff_multiplier = 1
             schedule.last_error_type = ''
 
+            # Only a run that actually completed its walk proves the region it
+            # covered is sound, so the watermark advances on success only.
+            if verification is not None:
+                advance_watermark(schedule, verification)
+            if plan['full_rebuild']:
+                schedule.last_full_rebuild_at = timezone.now()
+            elif bounded_fetch_may_have_truncated(schedule, plan, bookmarks_count):
+                # The burst filled the margin, so the newest bookmarks may lie
+                # past where this run stopped. Force an unbounded walk next run.
+                logger.warning(
+                    f"Bounded fetch imported {bookmarks_count} bookmarks — may have "
+                    f"truncated; forcing a full rebuild next run"
+                )
+                schedule.last_full_rebuild_at = None
+
             profile.last_sync_at = timezone.now()
             profile.sync_status = 'success'
             profile.sync_error_message = ''
@@ -752,7 +842,9 @@ def execute_bookmark_sync(sync_job_id: int):
             summary = (
                 f"Sync OK: {birdmarks_exported} found by birdmarks "
                 f"({bookmarks_count} new to DB, {birdmarks_skipped} known), "
-                f"{media_copied} media, {categorized} categorized"
+                f"{media_copied} media, {categorized} categorized\n"
+                f"Fetch plan: {plan['reason']}\n"
+                f"Verification: {verification.summary() if verification else 'did not run'}"
             )
             logger.info(f"{summary} for {profile.twitter_username}")
         else:

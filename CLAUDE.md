@@ -91,8 +91,39 @@ Django-Q runs `execute_bookmark_sync` in the qcluster container. After each bird
 3. Export all tweets to `master/bookmarks.json`
 4. Categorize uncategorized tweets via Anthropic API → updates `master/categories.json`
 5. Run `generate` + `publish-server` → copy to `bookmarks-html/` (live site)
+6. Verify completeness and advance the watermark (see below)
 
 Rate-limited fetches are treated as success (partial data is still processed). Real failures use exponential backoff. Cookie expiration disables sync after 5 consecutive failures.
+
+**Verified-completeness watermark (`web/twitter/verification.py`):**
+
+Bookmarks ingested at or before `BookmarkSyncSchedule.verified_ok_before` are verified
+complete, so the fetcher stops there instead of re-walking the whole archive every run.
+Without it, run time grows with the collection (it had reached ~229 pages / 10 min,
+against a 10-minute timeout).
+
+- **Axis is `Tweet.scraped_at`**, not `created_at`. Twitter paginates bookmarks in
+  *bookmark-added* order, so a freshly bookmarked old tweet is on page 1 — `created_at`
+  says nothing about pagination position.
+- **birdmarks takes no timestamp argument**, so the watermark is translated into a
+  `--max-pages` bound. `--rebuild` always starts at page 1 (newest).
+- **Two tiers of gap.** *Fetch* gaps (missing cached asset, empty record with no cache)
+  hold the watermark back — only a re-fetch fixes them. *Local* gaps (uncategorised,
+  not exported, media not yet copied) are repaired by steps 1-5 each cycle and do not.
+- **Quarantine.** A gap no re-fetch can repair (a deleted tweet) would pin the watermark
+  forever. `verification_ignored_ids` excludes it explicitly; it stays visible in the report.
+- **Backstops** for bookmarks a bounded walk cannot see: `full_rebuild_interval_days`
+  (default 7) forces a periodic unbounded walk, and a run importing more than
+  `fetch_margin_pages × 20` bookmarks forces one on the next run.
+
+```bash
+docker exec twitter-bookmarks-qcluster-1 python manage.py verify_bookmarks         # report (read-only)
+docker exec twitter-bookmarks-qcluster-1 python manage.py verify_bookmarks --advance
+docker exec twitter-bookmarks-qcluster-1 python manage.py verify_bookmarks --quarantine-gaps
+```
+
+Note the container: `birdmarks_cache/`, `master/` and `bookmarks-media/` are bind-mounted
+into **qcluster**, not `web`. Running verification in `web` reports everything as missing.
 
 **Configuration:**
 - `.env` - API keys (ANTHROPIC_API_KEY, TWITTER_AUTH_TOKEN, TWITTER_CT0), OAuth credentials, database settings

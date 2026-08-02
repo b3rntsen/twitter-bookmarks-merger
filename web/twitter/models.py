@@ -123,6 +123,45 @@ class BookmarkSyncSchedule(models.Model):
         help_text="Use gap-free sync mode (rebuild)"
     )
 
+    # Verified-completeness watermark. Everything ingested at or before
+    # verified_ok_before has been checked complete, so the fetcher can stop
+    # there instead of re-walking the whole archive. See twitter/verification.py.
+    verified_ok_before = models.DateTimeField(
+        null=True, blank=True,
+        help_text="All bookmarks ingested at or before this time are verified complete"
+    )
+    verified_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="When the verification pass last ran"
+    )
+    verified_count = models.IntegerField(
+        default=0,
+        help_text="Bookmarks covered by the watermark at the last verification"
+    )
+    verification_report = models.JSONField(
+        default=dict, blank=True,
+        help_text="Last verification result (gaps, counts, timings)"
+    )
+    last_full_rebuild_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text="Last unbounded walk of the whole bookmark list"
+    )
+    full_rebuild_interval_days = models.IntegerField(
+        default=7,
+        help_text="Force an unbounded walk this often (0 = never). Catches bookmarks a bounded fetch cannot see."
+    )
+    fetch_margin_pages = models.IntegerField(
+        default=2,
+        help_text="Extra pages fetched beyond the watermark, covering bookmarks added since the last run"
+    )
+    verification_ignored_ids = models.JSONField(
+        default=list, blank=True,
+        help_text=(
+            "Tweet IDs quarantined from the watermark: gaps no re-fetch can repair "
+            "(e.g. deleted tweets). Without this one dead record pins the watermark forever."
+        )
+    )
+
     # Status tracking
     last_scheduled_at = models.DateTimeField(null=True, blank=True)
     next_sync_at = models.DateTimeField(null=True, blank=True)
