@@ -52,15 +52,6 @@ resource "aws_security_group" "web_sg" {
     description = "HTTPS"
   }
 
-  # Django web server (port 8000) - for direct access or reverse proxy
-  ingress {
-    from_port   = 8000
-    to_port     = 8000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-    description = "Django web server"
-  }
-
   # SSH access (optional, for debugging)
   ingress {
     from_port   = 22
@@ -78,6 +69,15 @@ resource "aws_security_group" "web_sg" {
     protocol    = "udp"
     cidr_blocks = ["0.0.0.0/0"]
     description = "WireGuard VPN (blades-capture)"
+  }
+
+  # Blades arena game server (arena-server container) — also added out-of-band.
+  ingress {
+    from_port   = 7777
+    to_port     = 7777
+    protocol    = "udp"
+    cidr_blocks = ["0.0.0.0/0"]
+    description = "newblades arena ENet"
   }
 
   # Allow all outbound traffic
