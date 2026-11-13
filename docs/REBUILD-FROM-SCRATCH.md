@@ -33,6 +33,7 @@ from a secure backup.
    `AmazonSSMManagedInstanceCore` (SSM recovery shell) + CloudWatch session logging.
    `user_data.sh` installs Docker + compose on first boot. Reuse the existing EIP to keep DNS valid.
    Then harden SSH (no root login, fail2ban): `ssh … 'sudo bash -s' < scripts/harden-host.sh`.
+   Then install the pinned buildx that Compose needs: `ssh … 'sudo bash -s' < scripts/install-buildx.sh`.
 2. **DNS:** point `twitter.dethele.com` at the EIP on one.com.
 3. **Deploy code:** `./scripts/deploy-to-production.sh` (rsync repo → `docker compose -f docker-compose.prod.yml up -d --build`).
 4. **Secrets:** place `.env` on the server.
@@ -44,7 +45,7 @@ from a secure backup.
 ## Recovery channels & hazards
 - **SSM Session Manager** = out-of-band root shell over outbound 443 (works even when inbound is blackholed). See `docs/safe-reboot.md`.
 - **Reboot hazard:** the co-tenant newblades capture stack can blackhole all inbound on boot — see `docs/safe-reboot.md` before rebooting.
-- **Image builds need the classic builder:** the hand-installed Compose v5 plugin wants buildx ≥ 0.17, but AL2023's docker package ships 0.12, so `docker compose build` fails. Build with `DOCKER_BUILDKIT=0 docker build …` (or install a newer buildx).
+- **Image builds need buildx ≥ 0.17:** the hand-installed Compose v5 plugin requires it, but AL2023's docker package ships 0.12, so `docker compose build` fails without `scripts/install-buildx.sh` (pinned version + sha256; installed 2026-11-13). Fallback: `DOCKER_BUILDKIT=0 docker build …`.
 - **Media never goes in git** (gitignored). It lives on the server + backups only.
 
 ## Reproducible vs manual
