@@ -23,6 +23,20 @@ from markdown_parser import parse_frontmatter, extract_tweet_text, extract_media
 
 logger = logging.getLogger(__name__)
 
+# birdmarks walk limits. A bounded fetch covers a few pages and finishes in about
+# a minute. The full rebuild walks the whole collection and grows with it (~580s at
+# 5.4k bookmarks in Nov 2026), so a shared 10-minute cap failed it for 8 days.
+BOUNDED_FETCH_TIMEOUT = 600
+FULL_REBUILD_TIMEOUT = 1800
+# A job still 'running' past this is presumed crashed. It must exceed the longest
+# fetch plus the post-fetch pipeline, or a healthy full rebuild gets reaped mid-walk.
+STALE_RUNNING_MINUTES = 45
+
+
+def fetch_timeout(plan: dict) -> int:
+    """Seconds the birdmarks fetch for this plan may run."""
+    return FULL_REBUILD_TIMEOUT if plan['full_rebuild'] else BOUNDED_FETCH_TIMEOUT
+
 # Path to master data on server (rsynced from local)
 MASTER_DIR = Path(__file__).parent.parent.parent / 'master'
 TOOLS_DIR = Path(__file__).parent.parent.parent / 'tools'
@@ -711,7 +725,7 @@ def execute_bookmark_sync(sync_job_id: int):
             env=env,
             capture_output=True,
             text=True,
-            timeout=600  # 10-minute timeout
+            timeout=fetch_timeout(plan),
         )
 
         stdout = result.stdout
@@ -903,10 +917,10 @@ def execute_bookmark_sync(sync_job_id: int):
             # Success: schedule next sync
             schedule_next_bookmark_sync(profile.id)
 
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as te:
         # Timeout error
         job.status = 'failed'
-        job.error_message = 'Sync timed out after 10 minutes'
+        job.error_message = f'Sync timed out after {int(te.timeout) // 60} minutes'
         job.error_type = 'timeout'
         job.completed_at = timezone.now()
         job.save()
@@ -981,8 +995,8 @@ def schedule_next_bookmark_sync(twitter_profile_id: int):
                           error_message='Cancelled: superseded by newer scheduled job')
             logger.info(f"Cancelled {orphan_count} orphan pending job(s) for {profile.twitter_username}")
 
-        # Recover stuck running jobs for this profile (>30 min = presumed worker crash)
-        stale_cutoff = now - timedelta(minutes=30)
+        # Recover stuck running jobs for this profile (presumed worker crash)
+        stale_cutoff = now - timedelta(minutes=STALE_RUNNING_MINUTES)
         stuck_running = BookmarkSyncJob.objects.filter(
             twitter_profile=profile,
             status='running',
@@ -993,7 +1007,7 @@ def schedule_next_bookmark_sync(twitter_profile_id: int):
             stuck_running.update(
                 status='failed',
                 error_type='stale_job',
-                error_message='Automatically recovered: stuck in running >30 min (likely worker crash)',
+                error_message=f'Automatically recovered: stuck in running >{STALE_RUNNING_MINUTES} min (likely worker crash)',
                 completed_at=timezone.now()
             )
             logger.warning(f"Recovered {stuck_count} stuck running job(s) for {profile.twitter_username}")
@@ -1053,14 +1067,14 @@ def recover_stuck_bookmark_syncs():
 
     stuck_running = BookmarkSyncJob.objects.filter(
         status='running',
-        started_at__lt=now - timedelta(minutes=30),
+        started_at__lt=now - timedelta(minutes=STALE_RUNNING_MINUTES),
     )
     stuck_count = stuck_running.count()
     if stuck_count:
         stuck_running.update(
             status='failed',
             error_type='stale_job',
-            error_message='Watchdog: stuck in running >30 min (likely worker crash)',
+            error_message=f'Watchdog: stuck in running >{STALE_RUNNING_MINUTES} min (likely worker crash)',
             completed_at=now,
         )
         recovered_stuck = stuck_count

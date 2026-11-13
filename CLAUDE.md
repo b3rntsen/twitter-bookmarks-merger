@@ -115,6 +115,10 @@ against a 10-minute timeout).
 - **Backstops** for bookmarks a bounded walk cannot see: `full_rebuild_interval_days`
   (default 7) forces a periodic unbounded walk, and a run importing more than
   `fetch_margin_pages × 20` bookmarks forces one on the next run.
+- **Timeouts** (`web/twitter/tasks.py`): a bounded fetch gets 10 min, the unbounded walk
+  30 min (`FULL_REBUILD_TIMEOUT`; it took ~10 min at 5.4k bookmarks and grows with the
+  collection). The stuck-job reaper (`STALE_RUNNING_MINUTES`) must stay above it plus the
+  post-fetch pipeline; `test_sync_timeouts.py` enforces both.
 
 ```bash
 docker exec twitter-bookmarks-qcluster-1 python manage.py verify_bookmarks         # report (read-only)
